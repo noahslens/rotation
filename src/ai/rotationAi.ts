@@ -266,7 +266,7 @@ ${deliveryFacts}`,
       prompt: `classify this inbound text for a spotify playlist texting bot.
 
 also choose an optional auxiliary reaction for the user's message when it adds texture while rotation works.
-use it sparingly. examples: 🏃 for a run request, 🏋️ for gym, 🔒 for lock-in/focus, 🔥 for hype, ❤️ for a genuinely nice message.
+for playlist-making requests, include a relevant auxiliaryReaction almost always because rotation should react while generating. examples: 🏃 for a run request, 🏋️ for gym, 🔒 for lock-in/focus, 🔥 for hype, 🎧 for discovery, ❤️ for a genuinely nice message.
 leave auxiliaryReaction empty for routine commands, unclear requests, billing, or anything where a reaction would feel extra.
 
 ${JSON.stringify(
@@ -604,6 +604,7 @@ ${JSON.stringify(
 listen to the raw audio voice note and decide how rotation should handle it.
 this replaces the normal text classify + playlist-planning prompt for voice notes.
 if the user asks for a playlist, return playlistPlan directly from the audio and music context.
+for playlist requests, set auxiliaryReaction to a relevant emoji so rotation can react while generating.
 if the user asks billing/help/smalltalk, return the short message to send.
 promptText is a compact text label for logging, billing, spotify search, and playlist metadata. it should preserve the user's request, not be a full transcript.
 wantsSpotifyLink is true only when the user explicitly asks to connect or get a fresh spotify link.

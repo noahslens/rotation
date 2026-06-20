@@ -127,6 +127,31 @@ test("playlist auto delete parser handles short and long durations", async () =>
   assert.equal(playlistAutoDeleteRequest("don't delete after 1 day", now), null);
 });
 
+test("playlist working reaction falls back for generation requests", async () => {
+  const { playlistWorkingReaction } = await import("../src/bot/rotationBot");
+
+  assert.equal(
+    playlistWorkingReaction("morning run playlist", "activity_playlist"),
+    "🏃",
+  );
+  assert.equal(
+    playlistWorkingReaction("late night rainy playlist", "activity_playlist"),
+    "🌧️",
+  );
+  assert.equal(
+    playlistWorkingReaction("give me 200 new songs i'd fw", "discovery"),
+    "🎧",
+  );
+  assert.equal(
+    playlistWorkingReaction("what does this cost", "billing"),
+    undefined,
+  );
+  assert.equal(
+    playlistWorkingReaction("gym playlist", "activity_playlist", "fire"),
+    "🔥",
+  );
+});
+
 test("voice note detector handles inbound audio attachments", async () => {
   const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
   const message = {

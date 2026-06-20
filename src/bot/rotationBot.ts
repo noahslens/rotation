@@ -498,6 +498,45 @@ export const playlistAutoDeleteRequest = (
   };
 };
 
+const playlistWorkIntents = new Set([
+  "discovery",
+  "activity_playlist",
+  "more_like_playlist",
+  "more_like_artist",
+  "taste_expansion",
+]);
+
+export const playlistWorkingReaction = (
+  text: string,
+  intent?: string,
+  modelReaction?: string | null,
+) => {
+  const normalizedModelReaction = normalizeReaction(modelReaction);
+  if (normalizedModelReaction) return normalizedModelReaction;
+  if (intent && !playlistWorkIntents.has(intent)) return undefined;
+
+  const clean = normalize(text);
+  if (/\b(run|running|jog|jogging|sprint|marathon)\b/.test(clean)) return "🏃";
+  if (/\b(gym|lift|lifting|workout|work out|leg day|push day|pull day)\b/.test(clean)) {
+    return "🏋️";
+  }
+  if (/\b(lock in|lockin|focus|study|studying|code|coding|repo|essay|write|writing)\b/.test(clean)) {
+    return "🔒";
+  }
+  if (/\b(hype|pregame|party|rager|turn up|turnup|pool|graduation|birthday)\b/.test(clean)) {
+    return "🔥";
+  }
+  if (/\b(rain|rainy|storm|stormy)\b/.test(clean)) return "🌧️";
+  if (/\b(night|late night|sleep|midnight)\b/.test(clean)) return "🌙";
+  if (/\b(happy|sunny|summer|beach|morning)\b/.test(clean)) return "☀️";
+  if (/\b(car|drive|driving|road trip|roadtrip)\b/.test(clean)) return "🚗";
+  if (/\b(date|girl|mood|romantic)\b/.test(clean)) return "🖤";
+  if (/\b(new|discover|discovery|more like|songs i'd fw|songs id fw)\b/.test(clean)) {
+    return "🎧";
+  }
+  return "🎧";
+};
+
 export const explicitOpenerQuery = (prompt: string) => {
   const compact = prompt.replace(/\s+/g, " ").trim();
   const match =
@@ -992,7 +1031,12 @@ export class RotationBot {
         return;
       }
 
-      await this.tapback(message, action.auxiliaryReaction, user._id);
+      const workingReaction = playlistWorkingReaction(
+        promptText,
+        action.intent,
+        action.auxiliaryReaction,
+      );
+      await this.tapback(message, workingReaction, user._id);
 
       const shouldGateForPayment =
         Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
@@ -1025,7 +1069,7 @@ export class RotationBot {
           precomputedPlan: playlistPlan,
           precomputedContext: context,
           conversationHistory,
-          avoidReaction: action.auxiliaryReaction,
+          avoidReaction: workingReaction,
         });
       });
     } catch (caught) {
@@ -1423,7 +1467,12 @@ export class RotationBot {
       return;
     }
 
-    await this.tapback(sourceMessage, intent.auxiliaryReaction, user._id);
+    const workingReaction = playlistWorkingReaction(
+      text,
+      intent.intent,
+      intent.auxiliaryReaction,
+    );
+    await this.tapback(sourceMessage, workingReaction, user._id);
 
     const shouldGateForPayment =
       Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
@@ -1449,7 +1498,7 @@ export class RotationBot {
         intent: intent.intent,
         deferDeliveryUntilPaid: shouldGateForPayment,
         conversationHistory,
-        avoidReaction: intent.auxiliaryReaction,
+        avoidReaction: workingReaction,
       });
     });
   }
@@ -1576,7 +1625,11 @@ export class RotationBot {
       now: Date.now(),
     });
 
-    await this.tapback(sourceMessage, "like", user._id);
+    const workingReaction = playlistWorkingReaction(
+      `${openPoll.originalPrompt} ${selectedOption}`,
+      "activity_playlist",
+    );
+    await this.tapback(sourceMessage, workingReaction, user._id);
     await this.withTyping(space, async () => {
       await this.createPlaylistFromPrompt(space, user, {
         prompt: openPoll.originalPrompt,
@@ -1585,6 +1638,7 @@ export class RotationBot {
         requestKind: "user",
         deferDeliveryUntilPaid: openPoll.deliveryMode === "after_payment",
         conversationHistory,
+        avoidReaction: workingReaction,
       });
     });
     return true;
@@ -1655,6 +1709,8 @@ export class RotationBot {
       deliveryMode: "immediate",
       now: Date.now(),
     });
+    const workingReaction = playlistWorkingReaction(text, "activity_playlist");
+    await this.tapback(sourceMessage, workingReaction, user._id);
 
     try {
       const currentTracks = await this.spotify.getPlaylistTracks(user._id, target.id);
@@ -1761,7 +1817,6 @@ export class RotationBot {
         now: Date.now(),
       });
 
-      await this.tapback(sourceMessage, "like", user._id);
       const summary = preserveUrlsLowercase(plan.userFacingSummary);
       await sendLogged(
         space,

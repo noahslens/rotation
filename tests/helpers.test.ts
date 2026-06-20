@@ -73,6 +73,18 @@ test("playlist link resend detector avoids spotify auth links", async () => {
   assert.equal(wantsPlaylistLinkResend("make another pool party playlist"), false);
 });
 
+test("playlist links use web richlinks instead of spectrum app cards", async () => {
+  const { playlistLinkContent } = await import("../src/bot/rotationBot");
+  const built = await (
+    playlistLinkContent("https://open.spotify.com/playlist/abc123") as {
+      build: () => Promise<{ type: string; url: string }>;
+    }
+  ).build();
+
+  assert.equal(built.type, "richlink");
+  assert.equal(built.url, "https://open.spotify.com/playlist/abc123");
+});
+
 test("playlist edit detector handles edits without stealing more-like requests", async () => {
   const { playlistEditIntent, spotifyPlaylistIdFromText } = await import("../src/bot/rotationBot");
 

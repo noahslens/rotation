@@ -1,6 +1,5 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
 import {
-  app as appCard,
   attachment,
   contact,
   poll,
@@ -44,7 +43,7 @@ type TextingAction = {
 
 const fallbackCopy = {
   greeting:
-    "yo, i'm rotation. i'll make your spotify playlists over text and help you find new music. i get better as i learn your taste over time.",
+    "yo, i'm rotation. i'll make your spotify playlists over text, helping you find new music and rediscover old favs. i get better as i learn your taste over time.",
   linked:
     "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 1-2 mins.",
   help:
@@ -385,6 +384,8 @@ const sendLogged = async (space: Space, userId: Id<"users">, text: string) => {
   await outbound(userId, text);
 };
 
+export const playlistLinkContent = (url: string) => richlink(url);
+
 const compactError = (caught: unknown) =>
   caught instanceof Error ? caught.message : String(caught);
 
@@ -667,7 +668,7 @@ const greetingPrefix = (text: string) => {
 };
 
 const greetingCopy = (text: string) =>
-  `${greetingPrefix(text)}, i'm rotation. i'll make your spotify playlists over text and help you find new music. i get better as i learn your taste over time.`;
+  `${greetingPrefix(text)}, i'm rotation. i'll make your spotify playlists over text, helping you find new music and rediscover old favs. i get better as i learn your taste over time.`;
 
 const escapeVCardValue = (value: string) =>
   value
@@ -1371,7 +1372,7 @@ export class RotationBot {
     await sendLogged(
       space,
       user._id,
-      "btw, text 1d after a playlist and i'll auto-delete it after 1 day. 36h, 2w, or delete after 3 days work too.",
+      "btw, text 1d after a playlist and i'll auto-delete it after 1 day. 36h, 2w, delete after 3 days, etc work too.",
     );
   }
 
@@ -2525,14 +2526,14 @@ export class RotationBot {
 
   private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
     try {
-      await sendWithRetry(space, appCard(url));
-      await outbound(user._id, "sent playlist app card");
+      await sendWithRetry(space, playlistLinkContent(url));
+      await outbound(user._id, "sent playlist richlink");
     } catch (caught) {
-      console.warn("[rotation.playlist_app_card_failed]", compactError(caught));
+      console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
       await sendLogged(
         space,
         user._id,
-        "the spotify card didn't send cleanly, but it's at the top of your spotify library. ask me to resend and i'll try again.",
+        `the spotify preview didn't send cleanly, but here's the link: ${url}`,
       );
     }
   }

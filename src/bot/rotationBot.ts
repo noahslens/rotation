@@ -30,6 +30,7 @@ import {
 } from "../services/spotify";
 
 const dayMs = 24 * 60 * 60 * 1000;
+const hourMs = 60 * 60 * 1000;
 const weekMs = 7 * dayMs;
 const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
@@ -439,6 +440,62 @@ export const playlistEditIntent = (text: string) => {
     /\b(it|that|this|that one|this one|the one|same one)\b/.test(clean);
   const makeIt = /\bmake (it|that|this|the playlist)\b/.test(clean);
   return directPlaylistRef || makeIt;
+};
+
+export const playlistAutoDeleteRequest = (
+  text: string,
+  now = Date.now(),
+): { durationMs: number; deleteAt: number; label: string } | null => {
+  const clean = text
+    .toLowerCase()
+    .replace(/[\u2014\u2013]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return null;
+  if (/\b(don't|dont|do not|never|cancel|stop)\b/.test(clean)) return null;
+
+  const directDuration = clean.match(
+    /^(?:(?:in|after)\s+)?(\d{1,4})\s*(h|hr|hrs|hour|hours|d|day|days|w|week|weeks)(?:\s*(?:please|pls))?$/,
+  );
+  const deleteIntent =
+    /\b(auto\s?delete|delete|expire|expires|expiration|remove)\b/.test(clean);
+  if (!directDuration && !deleteIntent) return null;
+
+  const match =
+    directDuration ??
+    clean.match(/\b(\d{1,4})\s*(h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\b/);
+  if (!match) return null;
+
+  const rawAmount = match[1];
+  const unit = match[2];
+  if (!rawAmount || !unit) return null;
+
+  const amount = Number(rawAmount);
+  if (!Number.isInteger(amount) || amount <= 0) return null;
+  const durationMs = unit.startsWith("h")
+    ? amount * hourMs
+    : unit.startsWith("w")
+      ? amount * weekMs
+      : amount * dayMs;
+  if (durationMs < hourMs || durationMs > 365 * dayMs) return null;
+
+  const labelUnit = unit.startsWith("h")
+    ? amount === 1
+      ? "hour"
+      : "hours"
+    : unit.startsWith("w")
+      ? amount === 1
+        ? "week"
+        : "weeks"
+      : amount === 1
+        ? "day"
+        : "days";
+
+  return {
+    durationMs,
+    deleteAt: now + durationMs,
+    label: `${amount} ${labelUnit}`,
+  };
 };
 
 export const explicitOpenerQuery = (prompt: string) => {
@@ -925,11 +982,11 @@ export class RotationBot {
             reaction: action.auxiliaryReaction,
             message:
               action.message ||
-              "i'm here. send me a vibe and i'll make the playlist.",
+              "i'm here. send me a mood, activity, or artist and i'll make the playlist.",
           },
           {
             fallbackMessage:
-              "i'm here. send me a vibe and i'll make the playlist.",
+              "i'm here. send me a mood, activity, or artist and i'll make the playlist.",
           },
         );
         return;
@@ -1201,6 +1258,11 @@ export class RotationBot {
     const explainer =
       "how it works: text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i’ll make the playlist.";
     await sendLogged(space, user._id, explainer);
+    await sendLogged(
+      space,
+      user._id,
+      "btw, text 1d after a playlist and i'll auto-delete it after 1 day. 36h, 2w, or delete after 3 days work too.",
+    );
   }
 
   async deliverWeeklyDiscovery(space: Space, user: Doc<"users">) {
@@ -1234,7 +1296,7 @@ export class RotationBot {
     if (Date.now() - session.startedAt < 30 * 60 * 1000) return;
 
     const text =
-      "you've been listening for a minute. what are you doing rn? i'll remember the vibe for next time.";
+      "you've been listening for a minute. what are you doing rn? i'll remember the context for next time.";
     await sendLogged(space, user._id, text);
     await convex.mutation(api.listening.markAskedActivity, {
       sessionId: session._id,
@@ -1279,6 +1341,14 @@ export class RotationBot {
     if (wantsPlaylistLinkResend(text)) {
       await this.withTyping(space, async () => {
         await this.resendLatestPlaylistLink(space, user);
+      });
+      return;
+    }
+
+    const autoDelete = playlistAutoDeleteRequest(text);
+    if (autoDelete) {
+      await this.withTyping(space, async () => {
+        await this.schedulePlaylistAutoDelete(space, user, autoDelete, sourceMessage);
       });
       return;
     }
@@ -1335,7 +1405,7 @@ export class RotationBot {
 
     if (intent.intent === "smalltalk" && intent.confidence > 0.78) {
       const fallbackMessage =
-        "i'm here. send me a vibe and i'll make the playlist.";
+        "i'm here. send me a mood, activity, or artist and i'll make the playlist.";
       const action = await this.ai
         .textingAction({
           kind: "smalltalk",
@@ -1518,6 +1588,39 @@ export class RotationBot {
       });
     });
     return true;
+  }
+
+  private async schedulePlaylistAutoDelete(
+    space: Space,
+    user: Doc<"users">,
+    autoDelete: { deleteAt: number; label: string },
+    sourceMessage: Message,
+  ) {
+    const scheduled = await convex.mutation(
+      api.playlistExpirations.scheduleForLatestPlaylist,
+      {
+        userId: user._id,
+        deleteAt: autoDelete.deleteAt,
+        now: Date.now(),
+      },
+    );
+
+    if (!scheduled) {
+      await sendLogged(
+        space,
+        user._id,
+        "i need a finished playlist to attach that to first. make one, then say 1d or delete after 3 days.",
+      );
+      return;
+    }
+
+    await this.tapback(sourceMessage, "like", user._id);
+    const playlistName = scheduled.playlistName ?? "that playlist";
+    await sendLogged(
+      space,
+      user._id,
+      `done. i'll delete ${playlistName} after ${autoDelete.label}.`,
+    );
   }
 
   private async editExistingPlaylist(

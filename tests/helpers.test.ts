@@ -94,6 +94,39 @@ test("playlist edit detector handles edits without stealing more-like requests",
   );
 });
 
+test("playlist auto delete parser handles short and long durations", async () => {
+  const { playlistAutoDeleteRequest } = await import("../src/bot/rotationBot");
+  const now = Date.UTC(2026, 5, 20);
+
+  assert.deepEqual(playlistAutoDeleteRequest("1d", now), {
+    durationMs: 24 * 60 * 60 * 1000,
+    deleteAt: now + 24 * 60 * 60 * 1000,
+    label: "1 day",
+  });
+  assert.deepEqual(playlistAutoDeleteRequest("36h", now), {
+    durationMs: 36 * 60 * 60 * 1000,
+    deleteAt: now + 36 * 60 * 60 * 1000,
+    label: "36 hours",
+  });
+  assert.deepEqual(playlistAutoDeleteRequest("after 36h please", now), {
+    durationMs: 36 * 60 * 60 * 1000,
+    deleteAt: now + 36 * 60 * 60 * 1000,
+    label: "36 hours",
+  });
+  assert.deepEqual(playlistAutoDeleteRequest("2w", now), {
+    durationMs: 14 * 24 * 60 * 60 * 1000,
+    deleteAt: now + 14 * 24 * 60 * 60 * 1000,
+    label: "2 weeks",
+  });
+  assert.deepEqual(playlistAutoDeleteRequest("delete after 2 weeks", now), {
+    durationMs: 14 * 24 * 60 * 60 * 1000,
+    deleteAt: now + 14 * 24 * 60 * 60 * 1000,
+    label: "2 weeks",
+  });
+  assert.equal(playlistAutoDeleteRequest("make me a 1 hour run playlist", now), null);
+  assert.equal(playlistAutoDeleteRequest("don't delete after 1 day", now), null);
+});
+
 test("voice note detector handles inbound audio attachments", async () => {
   const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
   const message = {

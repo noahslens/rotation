@@ -187,6 +187,18 @@ export default defineSchema({
     playlistId: v.optional(v.string()),
     playlistUrl: v.optional(v.string()),
     trackIds: v.optional(v.array(v.string())),
+    autoDeleteAt: v.optional(v.number()),
+    autoDeleteStatus: v.optional(
+      v.union(
+        v.literal("scheduled"),
+        v.literal("deleting"),
+        v.literal("deleted"),
+        v.literal("failed"),
+        v.literal("canceled"),
+      ),
+    ),
+    autoDeletedAt: v.optional(v.number()),
+    autoDeleteError: v.optional(v.string()),
     error: v.optional(v.string()),
     deliveredAt: v.optional(v.number()),
     createdAt: v.number(),
@@ -194,6 +206,29 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_created", ["userId", "createdAt"]),
+
+  playlistExpirations: defineTable({
+    userId: v.id("users"),
+    requestId: v.optional(v.id("recommendationRequests")),
+    playlistId: v.string(),
+    playlistUrl: v.optional(v.string()),
+    playlistName: v.optional(v.string()),
+    deleteAt: v.number(),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("deleting"),
+      v.literal("deleted"),
+      v.literal("failed"),
+      v.literal("canceled"),
+    ),
+    error: v.optional(v.string()),
+    deletedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status_delete", ["status", "deleteAt"])
+    .index("by_user_playlist", ["userId", "playlistId"])
+    .index("by_request", ["requestId"]),
 
   billingEvents: defineTable({
     stripeEventId: v.string(),

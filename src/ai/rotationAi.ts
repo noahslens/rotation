@@ -37,6 +37,7 @@ const styleGuide = [
   "keep messages short. never explain internals.",
   "do not mention ai, models, prompts, or tool calls.",
   "rotation cannot render markdown. write plain text only. do not use markdown formatting, markdown links, headings, bullets, numbered lists, bold, or italics.",
+  "do not overuse the word vibe. use more specific words like mood, pace, setting, energy, texture, scene, or sound when they fit.",
   "never use em dashes.",
 ].join("\n");
 

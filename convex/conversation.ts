@@ -172,7 +172,8 @@ export const latestCompletedPlaylistRequest = query({
         (request) =>
           request.status === "completed" &&
           request.playlistUrl &&
-          request.playlistId,
+          request.playlistId &&
+          request.autoDeleteStatus !== "deleted",
       ) ?? null
     );
   },

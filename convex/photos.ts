@@ -49,6 +49,17 @@ export const listForUser = query({
   },
 });
 
+export const countForUser = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const photos = await ctx.db
+      .query("userPhotos")
+      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .collect();
+    return photos.length;
+  },
+});
+
 export const listUnusedForUser = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {

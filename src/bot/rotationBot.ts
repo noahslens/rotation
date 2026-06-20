@@ -64,6 +64,43 @@ const isTextMessage = (
 ): message is Message & { content: { type: "text"; text: string } } =>
   message.content.type === "text";
 
+const textFromMessage = (message: Message) => {
+  if (isTextMessage(message)) return message.content.text;
+  const content = message.content as {
+    type: string;
+    markdown?: unknown;
+    text?: unknown;
+    url?: unknown;
+  };
+  if (content.type === "markdown" && typeof content.markdown === "string") {
+    return content.markdown;
+  }
+  if (content.type === "richlink" && typeof content.url === "string") {
+    return content.url;
+  }
+  if (typeof content.text === "string" && content.text.trim()) return content.text;
+  return undefined;
+};
+
+const messageContentSummary = (message: Message) => {
+  const content = message.content as {
+    type: string;
+    items?: unknown;
+    mimeType?: unknown;
+    name?: unknown;
+    size?: unknown;
+    url?: unknown;
+  };
+  return {
+    type: content.type,
+    itemCount: Array.isArray(content.items) ? content.items.length : undefined,
+    mimeType: typeof content.mimeType === "string" ? content.mimeType : undefined,
+    name: typeof content.name === "string" ? content.name : undefined,
+    size: typeof content.size === "number" ? content.size : undefined,
+    hasUrl: typeof content.url === "string",
+  };
+};
+
 type ReactionMessage = Message & {
   content: { type: "reaction"; emoji: string; target: Message };
 };
@@ -135,7 +172,11 @@ const attachmentRead = (
   return await fetched.read();
 };
 
-const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
+const photoAttachmentsFromMessage = (
+  message: Message,
+  space: Space,
+  attachmentFetcher?: AttachmentFetcher,
+): PhotoAttachment[] => {
   const content = message.content;
   if (content.type === "attachment" && isImageMime(content.mimeType)) {
     const attachment = content as AttachmentContent;
@@ -145,17 +186,15 @@ const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
         name: attachment.name ?? "photo",
         mimeType: attachment.mimeType,
         size: attachment.size,
-        read:
-          attachment.read ??
-          (async () => {
-            throw new Error("attachment bytes unavailable");
-          }),
+        read: attachmentRead(attachment, space, attachmentFetcher),
       },
     ];
   }
 
   if (content.type === "group") {
-    return content.items.flatMap((item) => photoAttachmentsFromMessage(item));
+    return content.items.flatMap((item) =>
+      photoAttachmentsFromMessage(item, space, attachmentFetcher),
+    );
   }
 
   return [];
@@ -379,6 +418,36 @@ export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
   if (/\balmost done\b/i.test(base)) return base;
   return `${base.replace(/[.!?]*$/, ".")} almost done.`;
+};
+
+export const photoUploadAck = (args: {
+  existingPhotoCount: number;
+  incomingCount: number;
+  savedCount: number;
+  failureCount: number;
+}): { reaction?: string; message?: string } => {
+  if (args.failureCount > 0) {
+    if (args.savedCount > 0) {
+      const picLabel = args.savedCount === 1 ? "pic" : "pics";
+      return {
+        message: `saved ${args.savedCount} ${picLabel}. ${args.failureCount} didn't come through.`,
+      };
+    }
+    return {
+      message:
+        args.incomingCount === 1
+          ? "couldn't save that one. try sending it again in a sec."
+          : "couldn't save those. try sending them again in a sec.",
+    };
+  }
+
+  if (args.savedCount === 1) {
+    if (args.existingPhotoCount === 0) return { message: "saved it." };
+    return { reaction: "✅" };
+  }
+
+  if (args.savedCount > 1) return { message: `saved ${args.savedCount} pics` };
+  return { message: "couldn't save those. try sending them again in a sec." };
 };
 
 export const tapbackFeedbackReply = (emoji: string) => {
@@ -1200,6 +1269,16 @@ export class RotationBot {
 
   async handle(space: Space, message: Message) {
     if (message.direction === "outbound") return;
+    const platformUserId = message.sender?.id;
+    console.info("[rotation.inbound_seen]", {
+      platform: message.platform,
+      spaceId: space.id,
+      sender: platformUserId,
+      messageId: message.id,
+      content: messageContentSummary(message),
+      partIndex: (message as { partIndex?: unknown }).partIndex,
+      parentId: (message as { parentId?: unknown }).parentId,
+    });
     if (isReactionMessage(message)) {
       await this.handleTapback(space, message);
       return;
@@ -1209,14 +1288,21 @@ export class RotationBot {
       await this.handleVoiceNote(space, message, voiceNotes);
       return;
     }
-    const photoAttachments = photoAttachmentsFromMessage(message);
+    const photoAttachments = photoAttachmentsFromMessage(
+      message,
+      space,
+      this.attachmentFetcher,
+    );
     if (photoAttachments.length) {
       await this.handlePhotoUpload(space, message, photoAttachments);
       return;
     }
-    if (!isTextMessage(message)) return;
+    const inboundText = textFromMessage(message);
+    if (!inboundText) {
+      await this.handleUnsupportedInbound(space, message);
+      return;
+    }
 
-    const platformUserId = message.sender?.id;
     if (!platformUserId) return;
 
     console.info("[rotation.inbound]", {
@@ -1224,7 +1310,7 @@ export class RotationBot {
       spaceId: space.id,
       sender: platformUserId,
       messageId: message.id,
-      text: message.content.text,
+      text: inboundText,
     });
 
     const now = Date.now();
@@ -1237,7 +1323,7 @@ export class RotationBot {
 
     const claim = await convex.mutation(api.conversation.claimInboundMessage, {
       userId: user._id,
-      text: message.content.text,
+      text: inboundText,
       messageId: message.id,
       now,
     });
@@ -1254,14 +1340,45 @@ export class RotationBot {
         console.warn("[rotation.read_failed]", compactError(caught));
       });
       const conversationHistory = await this.recentConversation(user._id);
-      await this.route(space, user, message.content.text, message, conversationHistory);
+      await this.route(space, user, inboundText, message, conversationHistory);
     } catch (caught) {
-      await this.recordFailure("message_handler", user._id, { text: message.content.text }, caught);
+      await this.recordFailure("message_handler", user._id, { text: inboundText }, caught);
       console.error("[rotation.error]", caught);
       await sendLogged(space, user._id, fallbackCopy.error).catch((sendError) => {
         console.error("[rotation.fallback_send_failed]", sendError);
       });
     }
+  }
+
+  private async handleUnsupportedInbound(space: Space, message: Message) {
+    const platformUserId = message.sender?.id;
+    if (!platformUserId) return;
+
+    const now = Date.now();
+    const user = await convex.mutation(api.users.upsertFromMessage, {
+      platform: message.platform,
+      platformUserId,
+      now,
+    });
+    if (!user) return;
+
+    const summary = messageContentSummary(message);
+    const claim = await convex.mutation(api.conversation.claimInboundMessage, {
+      userId: user._id,
+      text: `unsupported inbound: ${summary.type}`,
+      messageId: message.id,
+      now,
+    });
+    if (!claim.claimed) return;
+
+    await message.read().catch((caught) => {
+      console.warn("[rotation.unsupported_read_failed]", compactError(caught));
+    });
+    console.warn("[rotation.unsupported_inbound]", {
+      userId: user._id,
+      messageId: message.id,
+      content: summary,
+    });
   }
 
   private async handleTapback(space: Space, message: ReactionMessage) {
@@ -1558,6 +1675,9 @@ export class RotationBot {
       console.warn("[rotation.photo_read_failed]", compactError(caught));
     });
 
+    const existingPhotoCount = await convex.query(api.photos.countForUser, {
+      userId: user._id,
+    });
     let savedCount = 0;
     const failures: string[] = [];
     for (const photo of photoAttachments) {
@@ -1597,19 +1717,21 @@ export class RotationBot {
       );
     }
 
-    const reply =
-      savedCount === photoAttachments.length
-        ? savedCount === 1
-          ? "saved it."
-          : `saved ${savedCount}.`
-        : savedCount > 0
-          ? `saved ${savedCount}. ${failures.length} didn't come through.`
-          : photoAttachments.length === 1
-            ? "couldn't save that one. try sending it again in a sec."
-            : "couldn't save those. try sending them again in a sec.";
-    await this.withTyping(space, async () => {
-      await sendLogged(space, user._id, reply);
+    const ack = photoUploadAck({
+      existingPhotoCount,
+      incomingCount: photoAttachments.length,
+      savedCount,
+      failureCount: failures.length,
     });
+    if (ack.reaction) {
+      const reacted = await this.tapback(message, ack.reaction, user._id);
+      if (reacted && !ack.message) return;
+    }
+    if (ack.message) {
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, ack.message as string);
+      });
+    }
   }
 
   private async tapback(

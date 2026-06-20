@@ -316,6 +316,47 @@ test("voice note detector ignores non-audio attachments", async () => {
   assert.equal(notes.length, 0);
 });
 
+test("photo upload acknowledgement distinguishes first and later photos", async () => {
+  const { photoUploadAck } = await import("../src/bot/rotationBot");
+
+  assert.deepEqual(
+    photoUploadAck({
+      existingPhotoCount: 0,
+      incomingCount: 1,
+      savedCount: 1,
+      failureCount: 0,
+    }),
+    { message: "saved it." },
+  );
+  assert.deepEqual(
+    photoUploadAck({
+      existingPhotoCount: 1,
+      incomingCount: 1,
+      savedCount: 1,
+      failureCount: 0,
+    }),
+    { reaction: "✅" },
+  );
+  assert.deepEqual(
+    photoUploadAck({
+      existingPhotoCount: 1,
+      incomingCount: 3,
+      savedCount: 3,
+      failureCount: 0,
+    }),
+    { message: "saved 3 pics" },
+  );
+  assert.deepEqual(
+    photoUploadAck({
+      existingPhotoCount: 1,
+      incomingCount: 2,
+      savedCount: 1,
+      failureCount: 1,
+    }),
+    { message: "saved 1 pic. 1 didn't come through." },
+  );
+});
+
 test("unsupported service detector answers onboarding support questions only", async () => {
   const { unsupportedMusicServiceReply } = await import("../src/bot/rotationBot");
 

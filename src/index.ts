@@ -21,6 +21,7 @@ const bot = createRotationBot({
   },
 });
 const stopBackgroundJobs = startBackgroundJobs(app, bot);
+const pendingHandlers = new Set<Promise<void>>();
 
 console.info("[rotation.startup]", {
   providers: ["iMessage"],
@@ -30,6 +31,7 @@ console.info("[rotation.startup]", {
 
 const shutdown = async () => {
   stopBackgroundJobs();
+  await Promise.allSettled([...pendingHandlers]);
   await app.stop();
   workerLock.release();
   process.exit(0);
@@ -39,5 +41,9 @@ process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 
 for await (const [space, message] of app.messages) {
-  await bot.handle(space, message);
+  const handler = bot.handle(space, message).catch((caught) => {
+    console.error("[rotation.unhandled_message_error]", caught);
+  });
+  pendingHandlers.add(handler);
+  handler.finally(() => pendingHandlers.delete(handler));
 }

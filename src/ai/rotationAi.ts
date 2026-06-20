@@ -280,6 +280,20 @@ const contextForModel = (context: MusicContext) => {
   };
 };
 
+const progressContextForModel = (context: MusicContext) => {
+  const full = contextForModel(context);
+  return {
+    user: full.user,
+    stats: full.stats,
+    savedTracks: full.savedTracks.slice(0, 220),
+    topTracks: full.topTracks.slice(0, 80),
+    playlists: full.playlists.slice(0, 30).map((playlist) => ({
+      ...playlist,
+      tracks: playlist.tracks.slice(0, 80),
+    })),
+  };
+};
+
 const conversationForModel = (turns?: ConversationTurn[]) =>
   (turns ?? []).slice(-60).map((turn) => ({
     role: turn.direction === "in" ? "user" : "rotation",
@@ -492,7 +506,7 @@ the first message should feel fast and concrete. if the user has a huge savedTra
 mention concrete taste patterns, textures, scenes, eras, or artist clusters when they are evident.
 avoid generic music taste compliments. do not say "your library's deep", "spotify boxes", "vibe", "algorithm", "data", "import", or "model".
 do not overdo it. no fake flattery. one sentence per message.`,
-      prompt: `write 2 short progress messages, max 140 characters each, for this user's first rotation.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
+      prompt: `write 2 short progress messages, max 140 characters each, for this user's first rotation.\n\n${JSON.stringify(progressContextForModel(context))}`,
     });
     return result.object.messages.map((message) => preserveUrlsLowercase(message));
   }

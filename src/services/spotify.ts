@@ -8,6 +8,7 @@ const apiBaseUrl = "https://api.spotify.com/v1";
 const refreshSkewMs = 90_000;
 const snapshotTrackBatchSize = 400;
 const spotifyPageConcurrency = 8;
+const spotifyPlaylistTrackConcurrency = 4;
 const spotifyRequestTimeoutMs = 20_000;
 
 export const spotifyScopes = [
@@ -105,6 +106,9 @@ const compactDescription = (value: string | null | undefined) => {
   const withoutTags = value.replace(/<[^>]+>/g, "").trim();
   return withoutTags || undefined;
 };
+
+const compactError = (caught: unknown) =>
+  caught instanceof Error ? caught.message : String(caught);
 
 const spotifyPlainText = (value: string) =>
   value
@@ -205,21 +209,6 @@ export class SpotifyService {
       topTracks: topTracks.length,
     });
 
-    const ownedPlaylists = spotifyUserId
-      ? playlists.filter((playlist) => playlist.owner?.id === spotifyUserId)
-      : [];
-    const playlistTracks = await this.getTracksFromPlaylists(
-      userId,
-      this.weightPlaylistsForTaste(ownedPlaylists, spotifyUserId),
-    );
-    const tracks = dedupeTracks([...savedTracks, ...topTracks, ...playlistTracks]);
-    console.info("[spotify.sync] fetched playlist tracks", {
-      userId,
-      playlistTracks: playlistTracks.length,
-      ownedPlaylists: ownedPlaylists.length,
-      dedupedTracks: tracks.length,
-    });
-
     const playlistSnapshot = playlists.map((playlist) => ({
       spotifyPlaylistId: playlist.id,
       name: playlist.name,
@@ -240,23 +229,55 @@ export class SpotifyService {
       now: Date.now(),
     });
 
-    for (let index = 0; index < tracks.length; index += snapshotTrackBatchSize) {
-      console.info("[spotify.sync] saving track batch", {
+    const seedTracks = dedupeTracks([...savedTracks, ...topTracks]);
+    for (let index = 0; index < seedTracks.length; index += snapshotTrackBatchSize) {
+      console.info("[spotify.sync] saving seed track batch", {
         userId,
         from: index,
-        to: Math.min(index + snapshotTrackBatchSize, tracks.length),
-        total: tracks.length,
+        to: Math.min(index + snapshotTrackBatchSize, seedTracks.length),
+        total: seedTracks.length,
       });
       await convex.mutation(api.spotify.saveSnapshot, {
         userId,
         playlists: [],
-        tracks: tracks.slice(index, index + snapshotTrackBatchSize),
-        markSynced: index + snapshotTrackBatchSize >= tracks.length,
+        tracks: seedTracks.slice(index, index + snapshotTrackBatchSize),
+        markSynced: false,
         now: Date.now(),
       });
     }
 
-    if (tracks.length === 0) {
+    const ownedPlaylists = spotifyUserId
+      ? playlists.filter((playlist) => playlist.owner?.id === spotifyUserId)
+      : [];
+    const playlistTracks = await this.getTracksFromPlaylists(
+      userId,
+      this.weightPlaylistsForTaste(ownedPlaylists, spotifyUserId),
+    );
+    const tracks = dedupeTracks([...seedTracks, ...playlistTracks]);
+    console.info("[spotify.sync] fetched playlist tracks", {
+      userId,
+      playlistTracks: playlistTracks.length,
+      ownedPlaylists: ownedPlaylists.length,
+      dedupedTracks: tracks.length,
+    });
+
+    for (let index = 0; index < playlistTracks.length; index += snapshotTrackBatchSize) {
+      console.info("[spotify.sync] saving playlist track batch", {
+        userId,
+        from: index,
+        to: Math.min(index + snapshotTrackBatchSize, playlistTracks.length),
+        total: playlistTracks.length,
+      });
+      await convex.mutation(api.spotify.saveSnapshot, {
+        userId,
+        playlists: [],
+        tracks: playlistTracks.slice(index, index + snapshotTrackBatchSize),
+        markSynced: index + snapshotTrackBatchSize >= playlistTracks.length,
+        now: Date.now(),
+      });
+    }
+
+    if (playlistTracks.length === 0) {
       await convex.mutation(api.spotify.saveSnapshot, {
         userId,
         playlists: [],
@@ -585,21 +606,39 @@ export class SpotifyService {
     userId: Id<"users">,
     playlists: SpotifyPlaylist[],
   ) {
-    const tracks: RotationTrack[] = [];
-    for (const playlist of playlists) {
-      const total = playlist.tracks?.total ?? 0;
-      if (!playlist.id || total === 0) continue;
-      const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
-        userId,
-        `/playlists/${playlist.id}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
-      );
-      tracks.push(
-        ...items
+    const playlistsWithTracks = playlists.filter(
+      (playlist) => playlist.id && (playlist.tracks?.total ?? 0) > 0,
+    );
+    console.info("[spotify.sync] fetching owned playlist tracks", {
+      userId,
+      playlists: playlistsWithTracks.length,
+      concurrency: spotifyPlaylistTrackConcurrency,
+    });
+
+    const trackGroups = await this.mapConcurrent(
+      playlistsWithTracks,
+      spotifyPlaylistTrackConcurrency,
+      async (playlist) => {
+        try {
+          const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
+            userId,
+            `/playlists/${playlist.id}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
+          );
+          return items
           .map((item) => mapTrack(item.item ?? item.track, "playlist", [playlist.id]))
-          .filter((track): track is RotationTrack => Boolean(track)),
-      );
-    }
-    return tracks;
+            .filter((track): track is RotationTrack => Boolean(track));
+        } catch (caught) {
+          console.warn("[spotify.sync] playlist tracks failed", {
+            userId,
+            playlistId: playlist.id,
+            name: playlist.name,
+            error: compactError(caught),
+          });
+          return [];
+        }
+      },
+    );
+    return trackGroups.flat();
   }
 
   private weightPlaylistsForTaste(

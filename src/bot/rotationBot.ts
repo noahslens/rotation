@@ -42,6 +42,8 @@ const weekMs = 7 * dayMs;
 const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
+const initialProgressStaleMs = 5 * 60 * 1000;
+const progressContextPollScheduleMs = [8_000, 10_000, 15_000, 20_000, 30_000, 45_000];
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -1859,10 +1861,14 @@ export class RotationBot {
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
     if (!user.spotifyLinked || user.initialPlaylistDeliveredAt) return;
-    const sendProgress = !user.initialPlaylistStartedAt;
+    const now = Date.now();
+    const sendProgress =
+      !user.initialPlaylistStartedAt ||
+      now - user.initialPlaylistStartedAt > initialProgressStaleMs;
     console.info("[rotation.initial] start", {
       userId: user._id,
       initialPlaylistStartedAt: user.initialPlaylistStartedAt,
+      sendProgress,
     });
     if (!user.initialPlaylistStartedAt) {
       await sendLogged(space, user._id, fallbackCopy.linked);
@@ -1874,6 +1880,11 @@ export class RotationBot {
       await convex.mutation(api.users.markInitialPlaylistStarted, {
         userId: user._id,
         now: Date.now(),
+      });
+    } else if (sendProgress) {
+      await convex.mutation(api.users.markInitialPlaylistStarted, {
+        userId: user._id,
+        now,
       });
     }
     await this.createPlaylistFromPrompt(space, user, {
@@ -2640,39 +2651,68 @@ export class RotationBot {
     });
 
     let playlistLinkSent = false;
+    let tasteProgressSent = false;
+    let readySoonProgressSent = false;
+    let progressMessages: string[] = [];
     let readySoonProgressTimer: ReturnType<typeof setTimeout> | undefined;
 
-    try {
-      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
-      if (args.sendProgress) {
-        const progressMessagesPromise = this.ai
-          .tasteProgressMessages(context)
-          .catch((caught) => {
-            console.warn("[rotation.progress_messages_failed]", compactError(caught));
-            return [];
-          });
-        void progressMessagesPromise.then(async (messages) => {
-          if (playlistLinkSent || !messages[0]) return;
-          await sendLogged(space, user._id, messages[0]).catch((caught) => {
-            console.warn("[rotation.initial_progress_failed]", compactError(caught));
-          });
+    const sendProgressMessage = async (message?: string) => {
+      const trimmed = message?.trim();
+      if (playlistLinkSent || !trimmed) return;
+      await sendLogged(space, user._id, trimmed);
+    };
+
+    const captureProgressMessages = async (context: MusicContext) => {
+      if (playlistLinkSent || tasteProgressSent) return;
+      const messages = await this.ai.tasteProgressMessages(context).catch((caught) => {
+        console.warn("[rotation.progress_messages_failed]", compactError(caught));
+        return [];
+      });
+      progressMessages = messages;
+      if (messages[0]) {
+        tasteProgressSent = true;
+        await sendProgressMessage(messages[0]).catch((caught) => {
+          tasteProgressSent = false;
+          console.warn("[rotation.initial_progress_failed]", compactError(caught));
         });
+      }
+    };
+
+    const startProgressContextPolling = () => {
+      void (async () => {
+        for (const delayMs of progressContextPollScheduleMs) {
+          if (playlistLinkSent || tasteProgressSent) return;
+          await sleep(delayMs);
+          if (playlistLinkSent || tasteProgressSent) return;
+          const partialContext = await this.fullMusicContext(user._id);
+          if (partialContext.tracks.length < 50) continue;
+          await captureProgressMessages(partialContext);
+          return;
+        }
+      })().catch((caught) => {
+        console.warn("[rotation.progress_context_poll_failed]", compactError(caught));
+      });
+    };
+
+    try {
+      if (args.sendProgress) {
+        startProgressContextPolling();
         readySoonProgressTimer = setTimeout(() => {
-          if (playlistLinkSent) return;
-          void progressMessagesPromise
-            .then(async (messages) => {
-              if (playlistLinkSent) return;
-              await sendLogged(
-                space,
-                user._id,
-                formatReadySoonProgressMessage(messages[1]),
-              );
-            })
-            .catch((caught) => {
-              console.warn("[rotation.delayed_progress_failed]", compactError(caught));
-            });
+          if (playlistLinkSent || readySoonProgressSent) return;
+          readySoonProgressSent = true;
+          void sendProgressMessage(
+            formatReadySoonProgressMessage(progressMessages[1]),
+          ).catch((caught) => {
+            readySoonProgressSent = false;
+            console.warn("[rotation.delayed_progress_failed]", compactError(caught));
+          });
         }, readySoonProgressMs);
         readySoonProgressTimer.unref?.();
+      }
+
+      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
+      if (args.sendProgress) {
+        void captureProgressMessages(context);
       }
       const newOnly = shouldUseNewOnly(args);
       const providerPlans = await Promise.all(
@@ -2876,6 +2916,14 @@ export class RotationBot {
         userId,
         tracks: context.tracks.length,
       });
+      void this.updateTasteSummary(userId, context);
+    }
+
+    return context;
+  }
+
+  private async updateTasteSummary(userId: Id<"users">, context: MusicContext) {
+    try {
       const summary = await this.ai.summarizeTaste(context);
       await convex.mutation(api.users.updateTasteSummary, {
         userId,
@@ -2885,10 +2933,12 @@ export class RotationBot {
           : undefined,
         now: Date.now(),
       });
-      context = await this.fullMusicContext(userId);
+    } catch (caught) {
+      console.warn("[rotation.context] summarize taste failed", {
+        userId,
+        error: compactError(caught),
+      });
     }
-
-    return context;
   }
 
   private async fullMusicContext(userId: Id<"users">): Promise<MusicContext> {

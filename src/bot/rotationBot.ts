@@ -37,7 +37,7 @@ const hourMs = 60 * 60 * 1000;
 const weekMs = 7 * dayMs;
 const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
-const delayedProgressMs = 100 * 1000;
+const readySoonProgressMs = 200 * 1000;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -50,7 +50,7 @@ const fallbackCopy = {
   greeting:
     "yo, i'm rotation. i'll make your spotify playlists over text, helping you find new music and rediscover old favs. i get better as i learn your taste over time.",
   linked:
-    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 2-4 mins.",
+    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 2-5 mins.",
   help:
     "ask for stuff like: “morning run”, “more like my liked songs”, “200 songs i’d fw”, or “gym but not corny”.",
   notLinked: "link spotify first and i can start cooking.",
@@ -372,38 +372,8 @@ export const formatPlaylistReadyReply = (
 
 const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
-
-const sourceCount = (tracks: MusicContext["tracks"], source: RotationTrack["source"]) =>
-  tracks.filter(
-    (track) => track.source === source || Boolean(track.sources?.includes(source)),
-  ).length;
-
-const deepPull = (tracks: MusicContext["tracks"]) =>
-  [...tracks]
-    .filter((track) => (track.popularity ?? 100) <= 45 && track.artists[0])
-    .sort(
-      (left, right) =>
-        (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0) ||
-        (left.popularity ?? 100) - (right.popularity ?? 100),
-    )[0];
-
-const onboardingProgressMessages = (context: MusicContext) => {
-  const savedCount = sourceCount(context.tracks, "saved");
-  const playlistCount = sourceCount(context.tracks, "playlist");
-  const topPull = deepPull(context.tracks);
-  const first =
-    savedCount >= 1_000
-      ? `ok wow, ${savedCount.toLocaleString("en-US")} liked songs is a real library lol`
-      : topPull
-        ? `ok ${topPull.name.toLowerCase()} by ${topPull.artists[0]?.toLowerCase()} is a deep pull`
-        : "ok yeah, there's enough here to make this personal.";
-  const second = topPull
-    ? `i'm using stuff like ${topPull.name.toLowerCase()} as signal, not just the obvious artists.`
-    : playlistCount
-      ? `also reading ${playlistCount.toLocaleString("en-US")} playlist songs for the deeper patterns.`
-      : fallbackDelayedProgress;
-  return [first, second];
-};
+const initialProgressMessage = "starting with your liked songs now.";
+const readySoonProgressMessage = "still working. it'll be ready soon.";
 
 export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
@@ -2510,36 +2480,24 @@ export class RotationBot {
     });
 
     let playlistLinkSent = false;
-    let delayedProgressTimer: ReturnType<typeof setTimeout> | undefined;
-    let delayedProgressMessage = fallbackDelayedProgress;
+    let readySoonProgressTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
       if (args.sendProgress) {
-        delayedProgressTimer = setTimeout(() => {
+        await sendLogged(space, user._id, initialProgressMessage);
+        readySoonProgressTimer = setTimeout(() => {
           if (playlistLinkSent) return;
           void sendLogged(
             space,
             user._id,
-            formatDelayedProgressMessage(delayedProgressMessage),
+            readySoonProgressMessage,
           ).catch((caught) => {
             console.warn("[rotation.delayed_progress_failed]", compactError(caught));
           });
-        }, delayedProgressMs);
-        delayedProgressTimer.unref?.();
+        }, readySoonProgressMs);
+        readySoonProgressTimer.unref?.();
       }
       const context = args.precomputedContext ?? (await this.freshMusicContext(user));
-      const progressMessages = args.sendProgress
-        ? onboardingProgressMessages(context)
-        : [];
-      delayedProgressMessage = progressMessages[1] ?? fallbackDelayedProgress;
-      if (args.sendProgress) {
-        await sendLogged(
-          space,
-          user._id,
-          progressMessages[0] ??
-            "ok yeah, there's enough here to make this personal.",
-        );
-      }
       const newOnly = shouldUseNewOnly(args);
       const rawPlan =
         args.precomputedPlan ??
@@ -2707,7 +2665,7 @@ export class RotationBot {
       if (canDeliverNow) {
         await this.sendPlaylistLink(space, user, playlist.url);
         playlistLinkSent = true;
-        if (delayedProgressTimer) clearTimeout(delayedProgressTimer);
+        if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
         await sendLogged(space, user._id, reply);
         if (args.deferDeliveryUntilPaid) {
           await convex.mutation(api.conversation.markRequestDelivered, {
@@ -2731,7 +2689,7 @@ export class RotationBot {
       });
       throw caught;
     } finally {
-      if (delayedProgressTimer) clearTimeout(delayedProgressTimer);
+      if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
     }
   }
 

@@ -164,7 +164,13 @@ export class RotationBot {
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
     if (!user.spotifyLinked || user.initialPlaylistDeliveredAt) return;
-    await sendLogged(space, user._id, fallbackCopy.linked);
+    if (!user.initialPlaylistStartedAt) {
+      await sendLogged(space, user._id, fallbackCopy.linked);
+      await convex.mutation(api.users.markInitialPlaylistStarted, {
+        userId: user._id,
+        now: Date.now(),
+      });
+    }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
         "make my first rotation: 50 new songs that fit my spotify taste, with a few familiar anchors",

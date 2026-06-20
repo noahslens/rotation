@@ -52,7 +52,7 @@ const playlistPlanSchema = z.object({
 
 const selectedTracksSchema = z.object({
   selectedTrackIds: z.array(z.string()).min(1).max(200),
-  reason: z.string().max(180),
+  reason: z.string().max(1000),
 });
 
 const tasteSummarySchema = z.object({

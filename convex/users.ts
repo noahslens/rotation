@@ -116,6 +116,16 @@ export const markInitialPlaylistDelivered = mutation({
   },
 });
 
+export const markInitialPlaylistStarted = mutation({
+  args: { userId: v.id("users"), now: v.number() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      initialPlaylistStartedAt: args.now,
+      updatedAt: args.now,
+    });
+  },
+});
+
 export const markPaywallShown = mutation({
   args: { userId: v.id("users"), now: v.number() },
   handler: async (ctx, args) => {

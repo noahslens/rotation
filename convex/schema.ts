@@ -21,6 +21,7 @@ export default defineSchema({
     defaultMarket: v.optional(v.string()),
     tasteSummary: v.optional(v.string()),
     activityPreferencesJson: v.optional(v.string()),
+    initialPlaylistStartedAt: v.optional(v.number()),
     initialPlaylistDeliveredAt: v.optional(v.number()),
     hasSeenPaywall: v.boolean(),
     completedRequestCount: v.number(),

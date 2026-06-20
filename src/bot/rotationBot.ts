@@ -209,6 +209,9 @@ const rankDiscoveryCandidates = (tracks: CandidateTrack[]) =>
     .sort((left, right) => left.score - right.score)
     .map(({ track }) => track);
 
+const hasActiveSubscription = (user: Pick<Doc<"users">, "subscriptionStatus">) =>
+  user.subscriptionStatus === "active" || user.subscriptionStatus === "trialing";
+
 export class RotationBot {
   constructor(
     private readonly ai: RotationAi,
@@ -380,11 +383,26 @@ export class RotationBot {
       return;
     }
 
+    const shouldGateForPayment =
+      Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
+    if (shouldGateForPayment) {
+      await sendLogged(
+        space,
+        user._id,
+        paywallText(user._id, { buildingPlaylist: true }),
+      );
+      await convex.mutation(api.users.markPaywallShown, {
+        userId: user._id,
+        now: Date.now(),
+      });
+    }
+
     await this.createPlaylistFromPrompt(space, user, {
       prompt: text,
       defaultCount: 50,
       requestKind: "user",
       intent: intent.intent,
+      deferDeliveryUntilPaid: shouldGateForPayment,
     });
   }
 
@@ -475,6 +493,7 @@ export class RotationBot {
       pollAnswer: selectedOption,
       defaultCount: 50,
       requestKind: "user",
+      deferDeliveryUntilPaid: openPoll.deliveryMode === "after_payment",
     });
     return true;
   }
@@ -489,12 +508,14 @@ export class RotationBot {
       intent?: string;
       pollAnswer?: string;
       sendProgress?: boolean;
+      deferDeliveryUntilPaid?: boolean;
     },
   ) {
     const requestId = await convex.mutation(api.conversation.createRequest, {
       userId: user._id,
       prompt: args.prompt,
       intent: args.intent ?? args.requestKind,
+      deliveryMode: args.deferDeliveryUntilPaid ? "after_payment" : "immediate",
       now: Date.now(),
     });
 
@@ -532,6 +553,7 @@ export class RotationBot {
         await convex.mutation(api.conversation.createPendingPoll, {
           userId: user._id,
           originalPrompt: args.prompt,
+          deliveryMode: args.deferDeliveryUntilPaid ? "after_payment" : "immediate",
           question: plan.pollQuestion,
           options: plan.pollOptions,
           expiresAt: Date.now() + 30 * 60 * 1000,
@@ -591,15 +613,34 @@ export class RotationBot {
           kind: "playlist_ready",
           userText: args.prompt,
           playlistName: playlist.name,
-          spotifyUrl: playlist.url,
           extra: plan.userFacingSummary,
         },
-        `made ${playlist.name}: ${playlist.url}`,
+        `made ${playlist.name}`,
       );
-      await sendLogged(space, user._id, reply);
+      const latestUser =
+        args.deferDeliveryUntilPaid && args.requestKind === "user"
+          ? await convex.query(api.users.getById, { userId: user._id })
+          : user;
+      const canDeliverNow =
+        !args.deferDeliveryUntilPaid ||
+        (latestUser ? hasActiveSubscription(latestUser) : false);
+
+      if (canDeliverNow) {
+        await sendLogged(space, user._id, reply);
+        await this.sendPlaylistLink(space, user, playlist.url);
+        if (args.deferDeliveryUntilPaid) {
+          await convex.mutation(api.conversation.markRequestDelivered, {
+            requestId,
+            now: Date.now(),
+          });
+        }
+      }
 
       if (args.requestKind === "user") {
-        await this.maybeSendPaywall(space, user);
+        await convex.mutation(api.users.incrementCompletedRequests, {
+          userId: user._id,
+          now: Date.now(),
+        });
       }
     } catch (caught) {
       await convex.mutation(api.conversation.failRequest, {
@@ -763,6 +804,45 @@ export class RotationBot {
       userId: user._id,
       now: Date.now(),
     });
+  }
+
+  private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
+    await sendWithRetry(space, richlink(url));
+    await outbound(user._id, url);
+  }
+
+  async deliverBillingNotification(
+    space: Space,
+    user: Doc<"users">,
+    request?: Doc<"recommendationRequests"> | null,
+  ) {
+    await sendLogged(
+      space,
+      user._id,
+      "welcome to rotation. you can manage your subscription here over text.",
+    );
+
+    const readyRequest =
+      request && request.status === "completed" && request.playlistUrl && !request.deliveredAt
+        ? request
+        : await convex.query(api.conversation.latestUndeliveredPaidRequest, {
+            userId: user._id,
+          });
+
+    if (readyRequest?.playlistUrl) {
+      await sendLogged(space, user._id, "your playlist is ready.");
+      await this.sendPlaylistLink(space, user, readyRequest.playlistUrl);
+      await convex.mutation(api.conversation.markRequestDelivered, {
+        requestId: readyRequest._id,
+        now: Date.now(),
+      });
+    } else {
+      await sendLogged(
+        space,
+        user._id,
+        "i'm still finishing that playlist. i'll send it here as soon as it's ready.",
+      );
+    }
   }
 
   private async safeReply(

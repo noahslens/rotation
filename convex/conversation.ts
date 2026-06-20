@@ -36,6 +36,9 @@ export const createRequest = mutation({
     userId: v.id("users"),
     prompt: v.string(),
     intent: v.string(),
+    deliveryMode: v.optional(
+      v.union(v.literal("immediate"), v.literal("after_payment")),
+    ),
     now: v.number(),
   },
   handler: async (ctx, args) => {
@@ -43,6 +46,7 @@ export const createRequest = mutation({
       userId: args.userId,
       prompt: args.prompt,
       intent: args.intent,
+      deliveryMode: args.deliveryMode ?? "immediate",
       status: "started",
       createdAt: args.now,
       updatedAt: args.now,
@@ -69,6 +73,40 @@ export const finishRequest = mutation({
   },
 });
 
+export const markRequestDelivered = mutation({
+  args: {
+    requestId: v.id("recommendationRequests"),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.requestId, {
+      deliveredAt: args.now,
+      updatedAt: args.now,
+    });
+  },
+});
+
+export const latestUndeliveredPaidRequest = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const requests = await ctx.db
+      .query("recommendationRequests")
+      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(20);
+
+    return (
+      requests.find(
+        (request) =>
+          request.deliveryMode === "after_payment" &&
+          request.status === "completed" &&
+          request.playlistUrl &&
+          !request.deliveredAt,
+      ) ?? null
+    );
+  },
+});
+
 export const failRequest = mutation({
   args: {
     requestId: v.id("recommendationRequests"),
@@ -88,6 +126,9 @@ export const createPendingPoll = mutation({
   args: {
     userId: v.id("users"),
     originalPrompt: v.string(),
+    deliveryMode: v.optional(
+      v.union(v.literal("immediate"), v.literal("after_payment")),
+    ),
     question: v.string(),
     options: v.array(v.string()),
     expiresAt: v.number(),
@@ -97,6 +138,7 @@ export const createPendingPoll = mutation({
     await ctx.db.insert("pendingPolls", {
       userId: args.userId,
       originalPrompt: args.originalPrompt,
+      deliveryMode: args.deliveryMode ?? "immediate",
       question: args.question,
       options: args.options,
       status: "open",

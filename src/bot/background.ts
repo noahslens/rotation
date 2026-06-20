@@ -96,9 +96,48 @@ export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
     }
   };
 
+  const notificationLoop = async () => {
+    while (running) {
+      await run("notifications", async () => {
+        const items = await convex.query(api.billing.listPendingNotifications, {
+          limit: 10,
+        });
+        for (const item of items) {
+          const { notification, user, request } = item;
+          if (!user) {
+            await convex.mutation(api.billing.markNotificationFailed, {
+              notificationId: notification._id,
+              error: "user not found",
+              now: Date.now(),
+            });
+            continue;
+          }
+
+          try {
+            const space = await withTimeout(dmForUser(app, user), 15_000, "dmForUser");
+            if (!space) throw new Error("could not create dm");
+            await bot.deliverBillingNotification(space, user, request);
+            await convex.mutation(api.billing.markNotificationSent, {
+              notificationId: notification._id,
+              now: Date.now(),
+            });
+          } catch (caught) {
+            await convex.mutation(api.billing.markNotificationFailed, {
+              notificationId: notification._id,
+              error: caught instanceof Error ? caught.message : String(caught),
+              now: Date.now(),
+            });
+          }
+        }
+      });
+      await sleep(3_000);
+    }
+  };
+
   void initialLoop();
   void weeklyLoop();
   void listeningLoop();
+  void notificationLoop();
 
   return () => {
     running = false;

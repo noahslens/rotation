@@ -467,6 +467,11 @@ const stripeWebhook = httpAction(async (ctx, request) => {
         subscriptionStatus: "active",
         now,
       });
+      await ctx.runMutation(api.billing.queueSubscriptionWelcome, {
+        userId: userId as never,
+        stripeCustomerId: customer,
+        now,
+      });
     }
 
     if (event.type.startsWith("customer.subscription.")) {

@@ -308,6 +308,16 @@ export const resetByPlatformUser = mutation({
       bump("billingEvents");
     }
 
+    for (const kind of ["subscription_welcome"] as const) {
+      for (const doc of await ctx.db
+        .query("outboundNotifications")
+        .withIndex("by_user_kind", (q) => q.eq("userId", userId).eq("kind", kind))
+        .collect()) {
+        await ctx.db.delete(doc._id);
+        bump("outboundNotifications");
+      }
+    }
+
     for (const doc of await ctx.db
       .query("jobFailures")
       .filter((q) => q.eq(q.field("userId"), userId))

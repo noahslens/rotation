@@ -124,6 +124,9 @@ export default defineSchema({
   pendingPolls: defineTable({
     userId: v.id("users"),
     originalPrompt: v.string(),
+    deliveryMode: v.optional(
+      v.union(v.literal("immediate"), v.literal("after_payment")),
+    ),
     question: v.string(),
     options: v.array(v.string()),
     status: v.union(
@@ -143,6 +146,9 @@ export default defineSchema({
     userId: v.id("users"),
     prompt: v.string(),
     intent: v.string(),
+    deliveryMode: v.optional(
+      v.union(v.literal("immediate"), v.literal("after_payment")),
+    ),
     status: v.union(
       v.literal("started"),
       v.literal("polling"),
@@ -153,6 +159,7 @@ export default defineSchema({
     playlistUrl: v.optional(v.string()),
     trackIds: v.optional(v.array(v.string())),
     error: v.optional(v.string()),
+    deliveredAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -167,6 +174,18 @@ export default defineSchema({
     stripeSubscriptionId: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_stripe_event", ["stripeEventId"]),
+
+  outboundNotifications: defineTable({
+    userId: v.id("users"),
+    kind: v.union(v.literal("subscription_welcome")),
+    status: v.union(v.literal("pending"), v.literal("sent"), v.literal("failed")),
+    requestId: v.optional(v.id("recommendationRequests")),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status_created", ["status", "createdAt"])
+    .index("by_user_kind", ["userId", "kind"]),
 
   listeningSessions: defineTable({
     userId: v.id("users"),

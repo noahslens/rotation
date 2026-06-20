@@ -83,6 +83,25 @@ const coverSelectionSchema = z.object({
   reason: z.string().max(240),
 });
 
+const voiceActionSchema = z.object({
+  intent: z.enum([
+    "help",
+    "billing",
+    "discovery",
+    "activity_playlist",
+    "more_like_playlist",
+    "more_like_artist",
+    "taste_expansion",
+    "smalltalk",
+  ]),
+  confidence: z.number().min(0).max(1),
+  promptText: z.string().max(2000),
+  message: z.string().max(320).nullable().optional(),
+  auxiliaryReaction: z.string().max(24).nullable().optional(),
+  wantsSpotifyLink: z.boolean().optional(),
+  playlistPlan: playlistPlanSchema.nullable().optional(),
+});
+
 const firstNameSchema = z.object({
   name: z.string().min(1).max(40),
 });
@@ -383,6 +402,87 @@ facts:
 user text: ${userText}`,
     });
     return preserveUrlsLowercase(result.text.trim());
+  }
+
+  async voiceAction(args: {
+    voices: Array<{
+      bytes: Buffer;
+      mimeType: string;
+      name?: string;
+      duration?: number;
+    }>;
+    context?: MusicContext;
+    defaultCount: number;
+    fixedTargetCount?: boolean;
+    newOnly?: boolean;
+    preSpotify?: boolean;
+  }) {
+    const audioParts = args.voices.flatMap((voice, index) => [
+      {
+        type: "text" as const,
+        text: `voice note ${index + 1}: name=${voice.name ?? "voice note"}, mimeType=${voice.mimeType}, duration=${voice.duration ?? "unknown"} seconds`,
+      },
+      {
+        type: "file" as const,
+        data: voice.bytes,
+        filename: voice.name ?? `voice-note-${index + 1}`,
+        mediaType: voice.mimeType,
+      },
+    ]);
+
+    const result = await generateObject({
+      model: model(),
+      schema: voiceActionSchema,
+      providerOptions,
+      system: `${styleGuide}
+
+listen to the raw audio voice note and decide how rotation should handle it.
+this replaces the normal text classify + playlist-planning prompt for voice notes.
+if the user asks for a playlist, return playlistPlan directly from the audio and music context.
+if the user asks billing/help/smalltalk, return the short message to send.
+promptText is a compact text label for logging, billing, spotify search, and playlist metadata. it should preserve the user's request, not be a full transcript.
+wantsSpotifyLink is true only when the user explicitly asks to connect or get a fresh spotify link.
+if spotify is not connected, do not create a playlistPlan. answer product/setup questions briefly and tell them to ask for a fresh link only if they want to connect.
+if spotify is connected, use the full music context the same way playlistPlan uses it for typed prompts.
+for playlistPlan rules, follow the same rules as typed playlist planning: dynamic counts for user requests, fixed counts only when countMode is fixed, new-music requests should exclude known liked/saved songs, and activity playlists may blend familiar anchors with fitting discovery.`,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  spotifyConnected: !args.preSpotify,
+                  defaultTargetCount: args.defaultCount,
+                  countMode: args.fixedTargetCount ? "fixed" : "dynamic",
+                  noveltyMode:
+                    args.newOnly === undefined
+                      ? "decide_from_audio"
+                      : args.newOnly
+                        ? "new_music_only"
+                        : "balanced",
+                  musicContext: args.context
+                    ? contextForModel(args.context)
+                    : undefined,
+                },
+                null,
+                2,
+              ),
+            },
+            ...audioParts,
+          ],
+        },
+      ],
+    });
+
+    return {
+      ...result.object,
+      promptText: preserveUrlsLowercase(result.object.promptText.trim()),
+      message: result.object.message
+        ? preserveUrlsLowercase(result.object.message.trim())
+        : result.object.message,
+    };
   }
 
   async chooseCoverPhoto(args: {

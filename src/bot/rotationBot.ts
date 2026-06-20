@@ -70,10 +70,28 @@ type AttachmentContent = {
   read: () => Promise<Buffer>;
 };
 
+type VoiceContent = {
+  type: "voice";
+  name?: string;
+  mimeType: string;
+  duration?: number;
+  size?: number;
+  read: () => Promise<Buffer>;
+};
+
 type PhotoAttachment = {
   messageId?: string;
   name: string;
   mimeType: string;
+  size?: number;
+  read: () => Promise<Buffer>;
+};
+
+type VoiceNote = {
+  messageId?: string;
+  name?: string;
+  mimeType: string;
+  duration?: number;
   size?: number;
   read: () => Promise<Buffer>;
 };
@@ -95,6 +113,29 @@ const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
 
   if (content.type === "group") {
     return content.items.flatMap((item) => photoAttachmentsFromMessage(item));
+  }
+
+  return [];
+};
+
+const voiceNotesFromMessage = (message: Message): VoiceNote[] => {
+  const content = message.content;
+  if (content.type === "voice") {
+    const voice = content as VoiceContent;
+    return [
+      {
+        messageId: message.id,
+        name: voice.name,
+        mimeType: voice.mimeType,
+        duration: voice.duration,
+        size: voice.size,
+        read: voice.read,
+      },
+    ];
+  }
+
+  if (content.type === "group") {
+    return content.items.flatMap((item) => voiceNotesFromMessage(item));
   }
 
   return [];
@@ -410,6 +451,11 @@ export class RotationBot {
       await this.handleTapback(space, message);
       return;
     }
+    const voiceNotes = voiceNotesFromMessage(message);
+    if (voiceNotes.length) {
+      await this.handleVoiceNote(space, message, voiceNotes);
+      return;
+    }
     const photoAttachments = photoAttachmentsFromMessage(message);
     if (photoAttachments.length) {
       await this.handlePhotoUpload(space, message, photoAttachments);
@@ -483,6 +529,207 @@ export class RotationBot {
 
     const reply = tapbackFeedbackReply(message.content.emoji);
     if (reply) await sendLogged(space, user._id, reply);
+  }
+
+  private async handleVoiceNote(
+    space: Space,
+    message: Message,
+    voiceNotes: VoiceNote[],
+  ) {
+    const platformUserId = message.sender?.id;
+    if (!platformUserId) return;
+
+    const now = Date.now();
+    const existingVoiceUser = await convex.mutation(api.users.upsertFromMessage, {
+      platform: message.platform,
+      platformUserId,
+      now,
+    });
+    if (!existingVoiceUser) return;
+    let user: Doc<"users"> = existingVoiceUser;
+
+    try {
+      await message.read().catch((caught) => {
+        console.warn("[rotation.voice_read_failed]", compactError(caught));
+      });
+
+      const voices = await this.withTyping(space, async () => {
+        const items: Array<{
+          bytes: Buffer;
+          mimeType: string;
+          name?: string;
+          duration?: number;
+        }> = [];
+        for (const voice of voiceNotes) {
+          const bytes = await voice.read();
+          items.push({
+            bytes,
+            mimeType: voice.mimeType,
+            name: voice.name,
+            duration: voice.duration,
+          });
+        }
+        return items;
+      });
+
+      if (user.onboardingStage === "new") {
+        const action = await this.ai.voiceAction({
+          voices,
+          defaultCount: 50,
+          preSpotify: true,
+        });
+        await this.logVoiceTurn(user._id, message.id, now, action.promptText);
+        await this.withTyping(space, async () => {
+          await this.sendGreeting(space, user, action.promptText || "hi");
+        });
+        return;
+      }
+
+      if (!user.spotifyLinked) {
+        const action = await this.ai.voiceAction({
+          voices,
+          defaultCount: 50,
+          preSpotify: true,
+        });
+        await this.logVoiceTurn(user._id, message.id, now, action.promptText);
+
+        if (action.wantsSpotifyLink) {
+          await this.withTyping(space, async () => {
+            await this.sendSpotifyLink(space, user);
+          });
+          return;
+        }
+
+        await this.withTyping(space, async () => {
+          await sendLogged(
+            space,
+            user._id,
+            action.message ||
+              "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
+          );
+        });
+        return;
+      }
+
+      if (!user.initialPlaylistDeliveredAt) {
+        await this.withTyping(space, async () => {
+          await this.deliverInitialPlaylist(space, user);
+        });
+        const latest = await convex.query(api.users.getById, { userId: user._id });
+        if (!latest) return;
+        user = latest;
+      }
+
+      const context = await this.freshMusicContext(user);
+      const action = await this.ai.voiceAction({
+        voices,
+        context,
+        defaultCount: 50,
+      });
+      const promptText = action.promptText || "voice note";
+      await this.logVoiceTurn(user._id, message.id, now, promptText);
+
+      if (action.intent === "help") {
+        await this.withTyping(space, async () => {
+          await sendLogged(space, user._id, action.message || fallbackCopy.help);
+        });
+        return;
+      }
+
+      if (action.intent === "billing") {
+        const reply =
+          user.stripeCustomerId || hasActiveSubscription(user)
+            ? await billingPortalText(user)
+            : paywallText(user._id);
+        await this.withTyping(space, async () => {
+          await sendLogged(space, user._id, reply);
+        });
+        return;
+      }
+
+      if (action.intent === "smalltalk" && action.confidence > 0.78) {
+        await this.applyTextingAction(
+          space,
+          user,
+          message,
+          {
+            mode: action.message ? "both" : "reaction_only",
+            reaction: action.auxiliaryReaction,
+            message:
+              action.message ||
+              "i'm here. send me a vibe and i'll make the playlist.",
+          },
+          {
+            fallbackMessage:
+              "i'm here. send me a vibe and i'll make the playlist.",
+          },
+        );
+        return;
+      }
+
+      await this.tapback(message, action.auxiliaryReaction, user._id);
+
+      const shouldGateForPayment =
+        Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
+      if (shouldGateForPayment) {
+        await this.withTyping(space, async () => {
+          await sendLogged(
+            space,
+            user._id,
+            paywallText(user._id, { buildingPlaylist: true }),
+          );
+        });
+        await convex.mutation(api.users.markPaywallShown, {
+          userId: user._id,
+          now: Date.now(),
+        });
+      }
+
+      const playlistPlan = action.playlistPlan;
+      if (!playlistPlan) {
+        throw new Error("voice action did not return a playlist plan");
+      }
+
+      await this.withTyping(space, async () => {
+        await this.createPlaylistFromPrompt(space, user, {
+          prompt: promptText,
+          defaultCount: 50,
+          requestKind: "user",
+          intent: action.intent,
+          deferDeliveryUntilPaid: shouldGateForPayment,
+          precomputedPlan: playlistPlan,
+          precomputedContext: context,
+        });
+      });
+    } catch (caught) {
+      await this.recordFailure(
+        "voice_note",
+        user._id,
+        { messageId: message.id, count: voiceNotes.length },
+        caught,
+      );
+      console.error("[rotation.voice_note_failed]", caught);
+      await sendLogged(
+        space,
+        user._id,
+        "couldn't hear that one. try sending it again?",
+      );
+    }
+  }
+
+  private async logVoiceTurn(
+    userId: Id<"users">,
+    messageId: string | undefined,
+    now: number,
+    promptText: string | undefined,
+  ) {
+    await convex.mutation(api.conversation.logTurn, {
+      userId,
+      direction: "in",
+      text: `voice note: ${promptText || "audio"}`,
+      messageId,
+      now,
+    });
   }
 
   private async handlePhotoUpload(
@@ -933,6 +1180,8 @@ export class RotationBot {
       pollAnswer?: string;
       sendProgress?: boolean;
       deferDeliveryUntilPaid?: boolean;
+      precomputedPlan?: Awaited<ReturnType<RotationAi["playlistPlan"]>>;
+      precomputedContext?: MusicContext;
     },
   ) {
     const requestId = await convex.mutation(api.conversation.createRequest, {
@@ -944,7 +1193,7 @@ export class RotationBot {
     });
 
     try {
-      const context = await this.freshMusicContext(user);
+      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
       if (args.sendProgress) {
         await sendLogged(
           space,
@@ -953,14 +1202,16 @@ export class RotationBot {
         );
       }
       const newOnly = shouldUseNewOnly(args);
-      const rawPlan = await this.ai.playlistPlan({
-        prompt: args.prompt,
-        context,
-        defaultCount: args.defaultCount,
-        pollAnswer: args.pollAnswer,
-        newOnly,
-        fixedTargetCount: args.requestKind !== "user",
-      });
+      const rawPlan =
+        args.precomputedPlan ??
+        (await this.ai.playlistPlan({
+          prompt: args.prompt,
+          context,
+          defaultCount: args.defaultCount,
+          pollAnswer: args.pollAnswer,
+          newOnly,
+          fixedTargetCount: args.requestKind !== "user",
+        }));
       const plan =
         args.requestKind === "user"
           ? rawPlan

@@ -152,6 +152,63 @@ test("playlist working reaction falls back for generation requests", async () =>
   );
 });
 
+test("carryover ambiguity poll catches recent mood plus new short theme", async () => {
+  const { carryoverAmbiguityPoll } = await import("../src/bot/rotationBot");
+  const now = Date.UTC(2026, 5, 20, 12);
+  const history = [
+    {
+      direction: "in",
+      text: "sad playlist",
+      createdAt: now - 5 * 60 * 1000,
+    },
+    {
+      direction: "out",
+      text: "made sad",
+      createdAt: now - 4 * 60 * 1000,
+    },
+    {
+      direction: "in",
+      text: "london playlist",
+      createdAt: now,
+    },
+  ] as const;
+
+  assert.deepEqual(
+    carryoverAmbiguityPoll("london playlist", [...history], "activity_playlist", now),
+    {
+      question: "for london, should i keep sad from earlier?",
+      options: ["london only", "sad london"],
+    },
+  );
+  assert.equal(
+    carryoverAmbiguityPoll("same london playlist", [...history], "activity_playlist", now),
+    null,
+  );
+  assert.equal(
+    carryoverAmbiguityPoll("gym playlist", [...history], "activity_playlist", now),
+    null,
+  );
+  assert.equal(
+    carryoverAmbiguityPoll("london playlist", [...history], "billing", now),
+    null,
+  );
+  assert.equal(
+    carryoverAmbiguityPoll(
+      "london playlist",
+      [
+        {
+          direction: "in",
+          text: "sad playlist",
+          createdAt: now - 20 * 60 * 1000,
+        },
+      ],
+      "activity_playlist",
+      now,
+    ),
+    null,
+  );
+});
+
 test("voice note detector handles inbound audio attachments", async () => {
   const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
   const message = {

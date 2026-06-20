@@ -506,6 +506,72 @@ const playlistWorkIntents = new Set([
   "taste_expansion",
 ]);
 
+const carryoverAmbiguityMs = 15 * 60 * 1000;
+const explicitFollowupPattern =
+  /\b(same|that|this|those|previous|last|earlier|again|still|keep|continue|more like|from before|make it|make that|make this|with|but|also)\b/;
+const moodCarryoverPattern =
+  /\b(sad|happy|chill|dark|rainy|late night|night|sleepy|angry|hype|romantic|melancholy|melancholic|nostalgic|summer|winter|fall|spring|sunny|moody|depressing|upbeat|calm|cozy)\b/;
+const activityDescriptorPattern =
+  /\b(run|running|gym|lift|lifting|workout|coding|code|study|studying|focus|party|pregame|drive|driving|road trip|sleep|shower|walk|walking|date|dinner)\b/;
+
+const playlistDescriptor = (value: string) =>
+  normalize(value)
+    .replace(
+      /\b(make|create|give|send|build|me|my|a|an|the|some|new|songs|music|playlist|mix|rotation|for|to|please|pls)\b/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+export const carryoverAmbiguityPoll = (
+  text: string,
+  conversationHistory: ConversationTurn[],
+  intent?: string,
+  now = Date.now(),
+): { question: string; options: string[] } | null => {
+  if (intent && !playlistWorkIntents.has(intent)) return null;
+  const clean = normalize(text);
+  if (!clean || explicitFollowupPattern.test(clean)) return null;
+
+  const currentDescriptor = playlistDescriptor(text);
+  const currentWords = currentDescriptor.split(/\s+/).filter(Boolean);
+  if (
+    currentWords.length === 0 ||
+    currentWords.length > 3 ||
+    moodCarryoverPattern.test(currentDescriptor) ||
+    activityDescriptorPattern.test(currentDescriptor)
+  ) {
+    return null;
+  }
+
+  const previous = [...conversationHistory]
+    .reverse()
+    .find((turn) => {
+      if (turn.direction !== "in") return false;
+      if (now - turn.createdAt > carryoverAmbiguityMs) return false;
+      const priorClean = normalize(turn.text);
+      if (!priorClean || priorClean === clean) return false;
+      const priorDescriptor = playlistDescriptor(turn.text);
+      return (
+        priorDescriptor &&
+        moodCarryoverPattern.test(priorDescriptor) &&
+        !currentDescriptor.includes(priorDescriptor)
+      );
+    });
+  if (!previous) return null;
+
+  const previousDescriptor = playlistDescriptor(previous.text);
+  const combined = `${previousDescriptor} ${currentDescriptor}`
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+  const freshOption = `${currentDescriptor} only`.slice(0, 40);
+  return {
+    question: `for ${currentDescriptor}, should i keep ${previousDescriptor} from earlier?`,
+    options: [freshOption, combined],
+  };
+};
+
 export const playlistWorkingReaction = (
   text: string,
   intent?: string,
@@ -1467,6 +1533,16 @@ export class RotationBot {
       return;
     }
 
+    const carryoverPoll = carryoverAmbiguityPoll(
+      text,
+      conversationHistory,
+      intent.intent,
+    );
+    if (carryoverPoll) {
+      await this.askCarryoverPoll(space, user, text, carryoverPoll);
+      return;
+    }
+
     const workingReaction = playlistWorkingReaction(
       text,
       intent.intent,
@@ -1642,6 +1718,32 @@ export class RotationBot {
       });
     });
     return true;
+  }
+
+  private async askCarryoverPoll(
+    space: Space,
+    user: Doc<"users">,
+    text: string,
+    carryoverPoll: { question: string; options: string[] },
+  ) {
+    const shouldGateForPayment =
+      Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
+    await convex.mutation(api.conversation.createPendingPoll, {
+      userId: user._id,
+      originalPrompt: text,
+      deliveryMode: shouldGateForPayment ? "after_payment" : "immediate",
+      question: carryoverPoll.question,
+      options: carryoverPoll.options,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+      now: Date.now(),
+    });
+    await this.withTyping(space, async () => {
+      await space.send(poll(carryoverPoll.question, carryoverPoll.options));
+      await outbound(
+        user._id,
+        `${carryoverPoll.question} ${carryoverPoll.options.join(" / ")}`,
+      );
+    });
   }
 
   private async schedulePlaylistAutoDelete(

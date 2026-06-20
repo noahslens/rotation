@@ -56,6 +56,8 @@ const conversationRules = [
   "recentConversation is chronological message history from about the last hour, if available.",
   "use recentConversation to resolve follow-ups, pronouns, corrections, poll context, prior playlist requests, user preferences stated in chat, and references like that, same vibe, more upbeat, or less mainstream.",
   "the latest inbound user message is still the main instruction. do not let old conversation override a clear new request.",
+  "do not silently merge an older mood/activity/location into a new standalone playlist request. if the latest message could reasonably mean either a fresh playlist or a continuation of the previous playlist idea, ask a short multiple choice poll instead of assuming.",
+  "only carry previous playlist attributes forward when the user uses explicit follow-up language like same, that, this, more like, keep, still, again, make it, or from before.",
   "do not quote or summarize recentConversation unless the user asks.",
 ].join("\n");
 
@@ -320,6 +322,8 @@ for balanced/activity playlists, you may pull directly from the user's history w
 think deeply about patterns across the liked songs: recurring artists, microgenres, production texture, era, mood, tempo, vocal style, scenes, and adjacent songs similar in nature.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
+if recentConversation creates ambiguity, use needsPoll with options that separate the fresh interpretation from the carried-over interpretation, like london only vs sad london.
+pollAnswer overrides ambiguous prior context. if the user picks a fresh interpretation, ignore the older playlist mood/activity unless it still independently fits.
 otherwise make a confident call.
 silently decide the right playlist length. do not show reasoning.
 if countMode is fixed, set targetCount exactly to defaultTargetCount.

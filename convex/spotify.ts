@@ -26,6 +26,7 @@ const playlistArg = v.object({
   spotifyPlaylistId: v.string(),
   name: v.string(),
   description: v.optional(v.string()),
+  ownerId: v.optional(v.string()),
   ownerName: v.optional(v.string()),
   trackCount: v.number(),
   snapshotId: v.optional(v.string()),
@@ -215,11 +216,33 @@ export const getMusicContext = query({
     const playlists = await ctx.db
       .query("spotifyPlaylists")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .take(80);
-    const tracks = await ctx.db
+      .take(300);
+    const savedTracks = await ctx.db
       .query("spotifyTracks")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .take(700);
+      .withIndex("by_user_source", (q) =>
+        q.eq("userId", args.userId).eq("source", "saved"),
+      )
+      .take(10_000);
+    const topTracks = await ctx.db
+      .query("spotifyTracks")
+      .withIndex("by_user_source", (q) =>
+        q.eq("userId", args.userId).eq("source", "top"),
+      )
+      .take(300);
+    const playlistTracks = await ctx.db
+      .query("spotifyTracks")
+      .withIndex("by_user_source", (q) =>
+        q.eq("userId", args.userId).eq("source", "playlist"),
+      )
+      .take(2_000);
+    const createdTracks = await ctx.db
+      .query("spotifyTracks")
+      .withIndex("by_user_source", (q) =>
+        q.eq("userId", args.userId).eq("source", "created"),
+      )
+      .take(500);
+
+    const tracks = [...savedTracks, ...topTracks, ...playlistTracks, ...createdTracks];
 
     return { user, playlists, tracks };
   },

@@ -6,6 +6,7 @@ import { decryptToken, encryptToken } from "../utils/tokenCrypto";
 const accountsBaseUrl = "https://accounts.spotify.com";
 const apiBaseUrl = "https://api.spotify.com/v1";
 const refreshSkewMs = 90_000;
+const maxPlaylistTracksForTaste = 120;
 
 export const spotifyScopes = [
   "user-read-email",
@@ -68,7 +69,7 @@ type SpotifyPlaylist = {
   id: string;
   name: string;
   description?: string | null;
-  owner?: { display_name?: string };
+  owner?: { id?: string; display_name?: string };
   tracks?: { total?: number };
   snapshot_id?: string;
   public?: boolean;
@@ -143,6 +144,7 @@ export class SpotifyService {
   }
 
   async syncUserLibrary(userId: Id<"users">) {
+    const user = await convex.query(api.users.getById, { userId });
     const [playlists, savedTracks, topTracks] = await Promise.all([
       this.getPlaylists(userId),
       this.getSavedTracks(userId),
@@ -151,7 +153,7 @@ export class SpotifyService {
 
     const playlistTracks = await this.getTracksFromPlaylists(
       userId,
-      playlists.slice(0, 12),
+      this.weightPlaylistsForTaste(playlists, user?.spotifyUserId).slice(0, 40),
     );
     const tracks = dedupeTracks([...savedTracks, ...topTracks, ...playlistTracks]);
 
@@ -161,6 +163,7 @@ export class SpotifyService {
         spotifyPlaylistId: playlist.id,
         name: playlist.name,
         description: compactDescription(playlist.description),
+        ownerId: playlist.owner?.id,
         ownerName: playlist.owner?.display_name,
         trackCount: playlist.tracks?.total ?? 0,
         snapshotId: playlist.snapshot_id,
@@ -171,7 +174,12 @@ export class SpotifyService {
       now: Date.now(),
     });
 
-    return { playlists: playlists.length, tracks: tracks.length };
+    return {
+      playlists: playlists.length,
+      tracks: tracks.length,
+      savedTracks: savedTracks.length,
+      playlistTracks: playlistTracks.length,
+    };
   }
 
   async searchTracks(
@@ -183,7 +191,7 @@ export class SpotifyService {
     const candidates: CandidateTrack[] = [];
     const seen = new Set(knownTrackIds);
 
-    for (const query of queries.slice(0, 28)) {
+    for (const query of queries.slice(0, 40)) {
       const params = new URLSearchParams({
         q: query,
         type: "track",
@@ -277,7 +285,6 @@ export class SpotifyService {
     return await this.paginate<SpotifyPlaylist>(
       userId,
       "/me/playlists?limit=50",
-      120,
     );
   }
 
@@ -285,7 +292,6 @@ export class SpotifyService {
     const items = await this.paginate<{ track?: SpotifyTrack }>(
       userId,
       "/me/tracks?limit=50",
-      200,
     );
     return items
       .map((item) => mapTrack(item.track, "saved"))
@@ -319,7 +325,7 @@ export class SpotifyService {
       const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
         userId,
         `/playlists/${playlist.id}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
-        100,
+        maxPlaylistTracksForTaste,
       );
       tracks.push(
         ...items
@@ -330,19 +336,45 @@ export class SpotifyService {
     return tracks;
   }
 
+  private weightPlaylistsForTaste(
+    playlists: SpotifyPlaylist[],
+    spotifyUserId: string | undefined,
+  ) {
+    const lowSignalName =
+      /\b(discover weekly|release radar|daily mix|radio|top songs|billboard|hot hits|viral|charts?)\b/i;
+    const highSignalName =
+      /\b(rotation|liked|favorites?|favourites?|best|vibes?|mood|gym|run|work|study|sleep|party|car|driv|summer|winter|fall|spring|sad|happy|chill|lock in)\b/i;
+    const lowSignalOwner = /\b(spotify|topsify|filtr|digster)\b/i;
+
+    const score = (playlist: SpotifyPlaylist) => {
+      let value = 0;
+      if (spotifyUserId && playlist.owner?.id === spotifyUserId) value += 12;
+      if (highSignalName.test(playlist.name)) value += 5;
+      if (playlist.description && highSignalName.test(playlist.description)) value += 2;
+      if (lowSignalName.test(playlist.name)) value -= 8;
+      if (playlist.owner?.display_name && lowSignalOwner.test(playlist.owner.display_name)) {
+        value -= 6;
+      }
+      value += Math.min(playlist.tracks?.total ?? 0, 180) / 180;
+      return value;
+    };
+
+    return [...playlists].sort((left, right) => score(right) - score(left));
+  }
+
   private async paginate<T>(
     userId: Id<"users">,
     path: string,
-    maxItems: number,
+    maxItems?: number,
   ) {
     const items: T[] = [];
     let next: string | null = path;
-    while (next && items.length < maxItems) {
+    while (next && (!maxItems || items.length < maxItems)) {
       const page: Page<T> = await this.request<Page<T>>(userId, next);
       items.push(...(page.items ?? []));
       next = page.next;
     }
-    return items.slice(0, maxItems);
+    return maxItems ? items.slice(0, maxItems) : items;
   }
 
   private async request<T>(

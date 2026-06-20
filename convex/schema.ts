@@ -73,6 +73,7 @@ export default defineSchema({
     spotifyPlaylistId: v.string(),
     name: v.string(),
     description: v.optional(v.string()),
+    ownerId: v.optional(v.string()),
     ownerName: v.optional(v.string()),
     trackCount: v.number(),
     snapshotId: v.optional(v.string()),

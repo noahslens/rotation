@@ -64,30 +64,59 @@ const firstNameSchema = z.object({
   name: z.string().min(1).max(40),
 });
 
-const compactTrack = (track: Pick<RotationTrack, "spotifyTrackId" | "name" | "artists" | "album" | "source" | "popularity">) => ({
+const compactTrack = (
+  track: Pick<
+    RotationTrack,
+    | "spotifyTrackId"
+    | "name"
+    | "artists"
+    | "album"
+    | "source"
+    | "popularity"
+    | "playlistIds"
+  >,
+) => ({
   id: track.spotifyTrackId,
   name: track.name,
   artists: track.artists.slice(0, 3),
   album: track.album,
   source: track.source,
   popularity: track.popularity,
+  playlistIds: track.playlistIds,
 });
 
-const contextForModel = (context: MusicContext) => ({
-  user: {
-    name: context.user?.preferredName ?? context.user?.displayName,
-    spotifyName: context.user?.spotifyDisplayName,
-    tasteSummary: context.user?.tasteSummary,
-    activityPreferencesJson: context.user?.activityPreferencesJson,
-  },
-  playlists: context.playlists.slice(0, 45).map((playlist) => ({
-    id: playlist.spotifyPlaylistId,
-    name: playlist.name,
-    description: playlist.description,
-    trackCount: playlist.trackCount,
-  })),
-  tracks: context.tracks.slice(0, 260).map(compactTrack),
-});
+const contextForModel = (context: MusicContext) => {
+  const savedTracks = context.tracks.filter((track) => track.source === "saved");
+  const otherTracks = context.tracks.filter((track) => track.source !== "saved");
+
+  return {
+    user: {
+      name: context.user?.preferredName ?? context.user?.displayName,
+      spotifyName: context.user?.spotifyDisplayName,
+      spotifyUserId: context.user?.spotifyUserId,
+      tasteSummary: context.user?.tasteSummary,
+      activityPreferencesJson: context.user?.activityPreferencesJson,
+    },
+    stats: {
+      savedTrackCount: savedTracks.length,
+      otherTrackCount: otherTracks.length,
+      playlistCount: context.playlists.length,
+    },
+    playlists: context.playlists.slice(0, 300).map((playlist) => ({
+      id: playlist.spotifyPlaylistId,
+      name: playlist.name,
+      description: playlist.description,
+      ownerId: playlist.ownerId,
+      ownerName: playlist.ownerName,
+      isUserOwned: Boolean(
+        context.user?.spotifyUserId && playlist.ownerId === context.user.spotifyUserId,
+      ),
+      trackCount: playlist.trackCount,
+    })),
+    savedTracks: savedTracks.map(compactTrack),
+    otherTracks: otherTracks.slice(0, 2_800).map(compactTrack),
+  };
+};
 
 const preserveUrlsLowercase = (text: string) => {
   const urls: string[] = [];
@@ -126,6 +155,7 @@ export class RotationAi {
     context: MusicContext;
     defaultCount: number;
     pollAnswer?: string;
+    newOnly?: boolean;
   }) {
     const result = await generateObject({
       model: model(),
@@ -133,16 +163,23 @@ export class RotationAi {
       system: `${styleGuide}
 
 you choose music by using the user's spotify library context and spotify catalog search.
+the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
+think deeply about patterns across the liked songs: recurring artists, microgenres, production texture, era, mood, tempo, vocal style, scenes, and adjacent songs similar in nature.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
 otherwise make a confident call.
-for discovery, lean toward songs not already in the user's library.
+for new music/discovery, use saved songs, top tracks, and weighted playlist tracks as taste evidence only. the playlist itself must be music outside their known library.
+for new music/discovery, find layups they are likely to fall in love with: very close in taste, but not already liked and not obvious top hits they have probably heard.
+for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
+for new music/discovery, search for adjacent artists, deeper cuts, scene/genre descriptors, label/era sounds, and artist combinations that strongly fit their taste.
+playlist owner/name matters: user-owned and personally named playlists are stronger taste evidence than spotify/editorial/charts/radio playlists.
 for activity playlists, blend familiar anchors with new songs that fit the moment.`,
       prompt: JSON.stringify(
         {
           userPrompt: args.prompt,
           pollAnswer: args.pollAnswer,
           defaultTargetCount: args.defaultCount,
+          noveltyMode: args.newOnly ? "new_music_only" : "balanced",
           musicContext: contextForModel(args.context),
         },
         null,
@@ -158,6 +195,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     plan: z.infer<typeof playlistPlanSchema>;
     candidates: CandidateTrack[];
     familiarTracks: RotationTrack[];
+    newOnly?: boolean;
   }) {
     const result = await generateObject({
       model: model(),
@@ -165,13 +203,16 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
-prefer candidate tracks for new discovery, but include familiar tracks when they strongly fit.
+if novelty mode is new_music_only, return only candidate track ids. use familiar tracks only as taste references, never as playlist picks.
+for new music/discovery, prioritize tracks that fit the user's taste but are less obvious: adjacent artists, deeper cuts, and non-super-mainstream songs. avoid huge hits unless explicitly requested.
+if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks when they strongly fit.
 avoid duplicate artists too close together unless the prompt asks for one artist.
-return only ids from the provided candidate or familiar lists.`,
+return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: JSON.stringify(
         {
           userPrompt: args.prompt,
           plan: args.plan,
+          noveltyMode: args.newOnly ? "new_music_only" : "balanced",
           targetCount: args.plan.targetCount,
           candidates: args.candidates.slice(0, 260).map(compactTrack),
           familiarTracks: args.familiarTracks.slice(0, 80).map(compactTrack),

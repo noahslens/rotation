@@ -103,6 +103,52 @@ const uniqueById = <T extends { spotifyTrackId: string }>(tracks: T[]) => {
   });
 };
 
+const newMusicIntent = new Set([
+  "discovery",
+  "more_like_playlist",
+  "more_like_artist",
+  "taste_expansion",
+]);
+
+const asksForNewMusic = (prompt: string) =>
+  /\b(new|discover|discovery|more songs|additional songs|not already|do not already|don't already|havent heard|haven't heard|fresh|put me on|fall in love|layups?)\b/i.test(
+    prompt,
+  );
+
+const explicitlyAllowsKnownMusic = (prompt: string) =>
+  /\b(include|use|add|play|make it|only|all)\b.{0,32}\b(liked|saved|library|familiar|songs i know|stuff i know|favorites?|favourites?)\b/i.test(
+    prompt,
+  ) ||
+  /\b(familiar|comfort songs|songs i already know|my favorites only|my favourites only)\b/i.test(
+    prompt,
+  );
+
+const shouldUseNewOnly = (args: {
+  requestKind: "initial" | "weekly" | "user";
+  intent?: string;
+  prompt: string;
+}) => {
+  if (args.requestKind === "initial" || args.requestKind === "weekly") return true;
+  if (explicitlyAllowsKnownMusic(args.prompt)) return false;
+  return Boolean(
+    (args.intent && newMusicIntent.has(args.intent)) || asksForNewMusic(args.prompt),
+  );
+};
+
+const discoveryScore = (track: CandidateTrack, index: number) => {
+  const popularity = track.popularity ?? 45;
+  const sweetSpotPenalty = Math.abs(popularity - 52) * 0.7;
+  const mainstreamPenalty = popularity > 82 ? (popularity - 82) * 4 : 0;
+  const tooObscurePenalty = popularity < 12 ? (12 - popularity) * 1.4 : 0;
+  return sweetSpotPenalty + mainstreamPenalty + tooObscurePenalty + index * 0.02;
+};
+
+const rankDiscoveryCandidates = (tracks: CandidateTrack[]) =>
+  tracks
+    .map((track, index) => ({ track, score: discoveryScore(track, index) }))
+    .sort((left, right) => left.score - right.score)
+    .map(({ track }) => track);
+
 export class RotationBot {
   constructor(
     private readonly ai: RotationAi,
@@ -173,7 +219,7 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "make my first rotation: 50 new songs that fit my spotify taste, with a few familiar anchors",
+        "make my first rotation: 50 new songs that fit my spotify taste. use my liked songs as taste evidence, but do not include songs i already have liked or saved. make it high-confidence layups, not obvious mainstream hits.",
       defaultCount: 50,
       requestKind: "initial",
     });
@@ -190,7 +236,7 @@ export class RotationBot {
     if (!user.spotifyLinked) return;
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "weekly rotation: 50 new songs this user would like based on their saved songs, top tracks, and playlists",
+        "weekly rotation: 50 new songs this user would like based on their saved songs, top tracks, and playlists. all picks should be new to their library and feel like high-confidence layups, not obvious mainstream hits.",
       defaultCount: 50,
       requestKind: "weekly",
     });
@@ -358,11 +404,13 @@ export class RotationBot {
 
     try {
       const context = await this.freshMusicContext(user._id);
+      const newOnly = shouldUseNewOnly(args);
       const plan = await this.ai.playlistPlan({
         prompt: args.prompt,
         context,
         defaultCount: args.defaultCount,
         pollAnswer: args.pollAnswer,
+        newOnly,
       });
 
       if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length && !args.pollAnswer) {
@@ -382,14 +430,32 @@ export class RotationBot {
         return;
       }
 
-      const knownTrackIds = new Set(context.tracks.map((track) => track.spotifyTrackId));
-      const candidates = await this.spotify.searchTracks(
+      const knownTrackIds = new Set([
+        ...context.tracks.map((track) => track.spotifyTrackId),
+        ...(await convex.query(api.spotify.getKnownTrackIds, {
+          userId: user._id,
+          limit: 15_000,
+        })),
+      ]);
+      const rawCandidates = await this.spotify.searchTracks(
         user._id,
         plan.searchQueries,
         knownTrackIds,
+        Math.min(600, Math.max(240, plan.targetCount * 3)),
       );
-      const familiarTracks = this.familiarTracks(context.tracks, plan.familiarTrackIds);
-      const selected = await this.selectTracks(args.prompt, plan, candidates, familiarTracks);
+      const candidates = newOnly
+        ? rankDiscoveryCandidates(rawCandidates)
+        : rawCandidates;
+      const familiarTracks = newOnly
+        ? []
+        : this.familiarTracks(context.tracks, plan.familiarTrackIds);
+      const selected = await this.selectTracks(
+        args.prompt,
+        plan,
+        candidates,
+        familiarTracks,
+        newOnly,
+      );
 
       if (selected.length === 0) {
         throw new Error("no tracks selected");
@@ -489,15 +555,17 @@ export class RotationBot {
     plan: Awaited<ReturnType<RotationAi["playlistPlan"]>>,
     candidates: CandidateTrack[],
     familiarTracks: RotationTrack[],
+    newOnly: boolean,
   ) {
     const chosen = await this.ai.chooseTracks({
       prompt,
       plan,
       candidates,
       familiarTracks,
+      newOnly,
     });
     const byId = new Map<string, RotationTrack>();
-    for (const track of [...candidates, ...familiarTracks]) {
+    for (const track of (newOnly ? candidates : [...candidates, ...familiarTracks])) {
       byId.set(track.spotifyTrackId, track);
     }
 
@@ -505,11 +573,13 @@ export class RotationBot {
       .map((id) => byId.get(id))
       .filter((track): track is RotationTrack => Boolean(track));
 
-    const filled = uniqueById([
-      ...selected,
-      ...candidates.slice(0, plan.targetCount),
-      ...familiarTracks.slice(0, Math.max(5, Math.floor(plan.targetCount * 0.15))),
-    ]);
+    const filled = newOnly
+      ? uniqueById([...selected, ...candidates.slice(0, plan.targetCount)])
+      : uniqueById([
+          ...selected,
+          ...candidates.slice(0, plan.targetCount),
+          ...familiarTracks.slice(0, Math.max(5, Math.floor(plan.targetCount * 0.15))),
+        ]);
     return filled.slice(0, plan.targetCount);
   }
 

@@ -1,5 +1,5 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
-import { poll } from "spectrum-ts";
+import { poll, richlink, type ContentInput } from "spectrum-ts";
 import { nativeContactCard } from "@spectrum-ts/imessage";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { RotationAi } from "../ai/rotationAi";
@@ -17,7 +17,7 @@ const weekMs = 7 * dayMs;
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 
 const fallbackCopy = {
-  greeting: "yo, i'm rotation. i'll make spotify playlists over text. what should i call you?",
+  greeting: "yo, i'm rotation. i'll make spotify playlists over text.",
   linked:
     "spotify is linked. i'm reading your taste now and making your first rotation.",
   help:
@@ -42,11 +42,11 @@ const outbound = async (userId: Id<"users">, text: string) => {
   });
 };
 
-const sendWithRetry = async (space: Space, text: string) => {
+const sendWithRetry = async (space: Space, content: ContentInput) => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await space.send(text);
+      await space.send(content);
       return;
     } catch (caught) {
       lastError = caught;
@@ -140,6 +140,9 @@ export class RotationBot {
     });
 
     try {
+      await message.read().catch((caught) => {
+        console.warn("[rotation.read_failed]", compactError(caught));
+      });
       await space.startTyping().catch((caught) => {
         console.warn("[rotation.typing_start_failed]", compactError(caught));
       });
@@ -222,11 +225,6 @@ export class RotationBot {
       return;
     }
 
-    if (!user.preferredName && user.onboardingStage === "asked_name") {
-      await this.captureNameAndSendSpotifyLink(space, user, text);
-      return;
-    }
-
     if (!user.spotifyLinked) {
       await this.sendSpotifyLink(space, user);
       return;
@@ -272,46 +270,26 @@ export class RotationBot {
   }
 
   private async sendGreeting(space: Space, user: Doc<"users">) {
-    const greeting = await this.safeReply(
-      { kind: "greeting" },
-      fallbackCopy.greeting,
-    );
-    await sendLogged(space, user._id, greeting);
+    await sendLogged(space, user._id, fallbackCopy.greeting);
     await space.send(nativeContactCard()).catch((caught) => {
       console.warn("[rotation.contact_card_failed]", compactError(caught));
     });
     await convex.mutation(api.users.setOnboardingStage, {
       userId: user._id,
-      onboardingStage: "asked_name",
+      onboardingStage: "link_sent",
       now: Date.now(),
     });
-  }
-
-  private async captureNameAndSendSpotifyLink(
-    space: Space,
-    user: Doc<"users">,
-    text: string,
-  ) {
-    const name = await this.ai.extractName(text).catch(() => text.trim().split(/\s+/)[0] ?? "you");
-    const updated = await convex.mutation(api.users.setName, {
-      userId: user._id,
-      preferredName: name,
-      now: Date.now(),
-    });
-    await this.sendSpotifyLink(space, updated ?? user, name);
+    await this.sendSpotifyLink(space, user);
   }
 
   private async sendSpotifyLink(space: Space, user: Doc<"users">, name?: string) {
     const link = await this.spotify.authorizationUrl(user._id);
-    const reply = await this.safeReply(
-      {
-        kind: "link_spotify",
-        name: name ?? user.preferredName ?? undefined,
-        spotifyUrl: link,
-      },
-      `${name ? `sick, ${name}. ` : ""}link spotify and i'll make your first playlist: ${link}`,
-    );
+    const reply = name
+      ? `sick, ${name}. connect spotify here so i can get into it`
+      : "connect spotify here so i can get into it";
     await sendLogged(space, user._id, reply);
+    await sendWithRetry(space, richlink(link));
+    await outbound(user._id, link);
   }
 
   private async maybeHandlePollAnswer(

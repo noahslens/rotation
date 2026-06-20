@@ -9,10 +9,12 @@ const dmForUser = async (app: RotationApp, user: Doc<"users">) => {
   if (user.platform !== "iMessage") return null;
   const im = (imessage as unknown as (app: RotationApp) => {
     user: (id: string) => Promise<unknown>;
-    space: (user: unknown) => Promise<unknown>;
+    space: { create: (user: unknown) => Promise<unknown> };
   })(app);
   const recipient = await im.user(user.platformUserId);
-  return (await im.space(recipient)) as Parameters<RotationBot["deliverInitialPlaylist"]>[0];
+  return (await im.space.create(recipient)) as Parameters<
+    RotationBot["deliverInitialPlaylist"]
+  >[0];
 };
 
 export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
@@ -35,7 +37,7 @@ export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
           if (space) await bot.deliverInitialPlaylist(space, user);
         }
       });
-      await sleep(20_000);
+      await sleep(5_000);
     }
   };
 

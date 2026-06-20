@@ -208,6 +208,14 @@ const contextForModel = (context: MusicContext) => {
   const topTracks = context.tracks.filter((track) => hasSource(track, "top"));
   const playlistTracks = context.tracks.filter((track) => hasSource(track, "playlist"));
   const createdTracks = context.tracks.filter((track) => hasSource(track, "created"));
+  const playlistContentsById = new Map<string, typeof playlistTracks>();
+  for (const track of playlistTracks) {
+    for (const playlistId of track.playlistIds ?? []) {
+      const tracks = playlistContentsById.get(playlistId) ?? [];
+      tracks.push(track);
+      playlistContentsById.set(playlistId, tracks);
+    }
+  }
 
   return {
     user: {
@@ -224,18 +232,29 @@ const contextForModel = (context: MusicContext) => {
       createdTrackCount: createdTracks.length,
       totalTrackCount: context.tracks.length,
       playlistCount: context.playlists.length,
+      playlistsWithTrackContentsCount: playlistContentsById.size,
     },
-    playlists: context.playlists.map((playlist) => ({
-      id: playlist.spotifyPlaylistId,
-      name: playlist.name,
-      description: playlist.description,
-      ownerId: playlist.ownerId,
-      ownerName: playlist.ownerName,
-      isUserOwned: Boolean(
+    playlists: context.playlists.flatMap((playlist) => {
+      const isUserOwned = Boolean(
         context.user?.spotifyUserId && playlist.ownerId === context.user.spotifyUserId,
-      ),
-      trackCount: playlist.trackCount,
-    })),
+      );
+      if (!isUserOwned) return [];
+      const tracks = playlistContentsById.get(playlist.spotifyPlaylistId) ?? [];
+      if (tracks.length === 0) return [];
+      return [
+        {
+          id: playlist.spotifyPlaylistId,
+          name: playlist.name,
+          description: playlist.description,
+          ownerId: playlist.ownerId,
+          ownerName: playlist.ownerName,
+          isUserOwned,
+          trackCount: playlist.trackCount,
+          storedTrackCount: tracks.length,
+          tracks: tracks.sort(byWeight).map(compactTrack),
+        },
+      ];
+    }),
     savedTracks: savedTracks.sort(byWeight).map(compactTrack),
     topTracks: topTracks.sort(byWeight).map(compactTrack),
     playlistTracks: playlistTracks.sort(byWeight).map(compactTrack),
@@ -261,6 +280,13 @@ const preserveUrlsLowercase = (text: string) => {
     .replace(/[\u2014\u2013]/g, "-")
     .replace(/__url_(\d+)__/g, (_, index: string) => urls[Number(index)] ?? "");
 };
+
+const playlistGenerationPrompt = (userPrompt: string, payload: unknown) =>
+  `user request: ${userPrompt}
+
+${JSON.stringify(payload, null, 2)}
+
+user request: ${userPrompt}`;
 
 export class RotationAi {
   async classify(args: {
@@ -321,8 +347,9 @@ ${JSON.stringify(
       system: `${styleGuide}
 
 you choose music by using the user's full stored spotify song history plus spotify catalog search.
-the musicContext contains full stored song history by source: liked songs in savedTracks, listening-history proxy tracks in topTracks, user-owned playlist tracks in playlistTracks, and prior rotation outputs in createdTracks.
+the musicContext contains full stored song history by source: liked songs in savedTracks, listening-history proxy tracks in topTracks, user-owned playlist tracks in playlistTracks, user-owned playlists with nested track contents in playlists, and prior rotation outputs in createdTracks.
 each track can include sources, playlistCount, and tasteWeight. tasteWeight is computed in convex from liked status, spotify top-track presence, and number of user-owned playlists containing the track.
+playlist metadata is only included for user-owned playlists with stored track contents. never infer taste from a playlist name unless its tracks are included too.
 ${playlistJudgmentRules}
 ${conversationRules}
 ${playlistNamingRules}
@@ -351,9 +378,10 @@ for new music/discovery, use saved songs, top tracks, and weighted playlist trac
 for new music/discovery, find layups they are almost certain to fall in love with: very close in taste, repeatedly supported by their saved tracks, but not already liked and not obvious top hits they have probably heard.
 for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
 for new music/discovery, search for adjacent artists, deeper cuts, scene/genre descriptors, label/era sounds, and artist combinations that strongly fit their taste.
-playlist owner/name matters: user-owned and personally named playlists are stronger taste evidence than spotify/editorial/charts/radio playlists.
+playlist owner/name matters only for user-owned playlists whose tracks are included. spotify/editorial/charts/radio playlists should not be used as taste evidence from metadata alone.
 for activity playlists, blend familiar anchors with new songs that fit the moment.`,
-      prompt: JSON.stringify(
+      prompt: playlistGenerationPrompt(
+        args.prompt,
         {
           userPrompt: args.prompt,
           pollAnswer: args.pollAnswer,
@@ -363,8 +391,6 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
           recentConversation: conversationForModel(args.conversationHistory),
           musicContext: contextForModel(args.context),
         },
-        null,
-        2,
       ),
     });
 
@@ -403,7 +429,8 @@ avoid pulling a lazy block from one album. usually one track per album is enough
 never select the exact same spotify track id twice.
 avoid selecting multiple versions of the same song by the same primary artist unless the user explicitly asked for multiple versions.
 return only ids from the provided lists that are allowed by the novelty mode.`,
-      prompt: JSON.stringify(
+      prompt: playlistGenerationPrompt(
+        args.prompt,
         {
           userPrompt: args.prompt,
           plan: args.plan,
@@ -414,8 +441,6 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
           candidates: args.candidates.slice(0, 320).map(compactTrack),
           familiarTracks: args.familiarTracks.map(compactTrack),
         },
-        null,
-        2,
       ),
     });
     return result.object;
@@ -427,7 +452,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       schema: tasteSummarySchema,
       ...generationSettings,
       system: styleGuide,
-      prompt: `summarize this user's music taste and infer activity preferences from playlist names. be concrete and compact.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
+      prompt: `summarize this user's music taste and infer activity preferences from liked songs plus user-owned playlists whose track contents are included. never infer taste from playlist names without their songs. be concrete and compact.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
     });
     return result.object;
   }
@@ -440,7 +465,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       system: `${styleGuide}
 
 write real, specific compliments about someone's music taste while rotation is building their first playlist.
-each message should feel like it was written after seeing their actual liked songs and playlists.
+each message should feel like it was written after seeing their actual liked songs and user-owned playlist contents.
 mention concrete taste patterns, textures, scenes, eras, or artist clusters when they are evident.
 do not say "your library's deep", "spotify boxes", "vibe", "algorithm", "data", "import", or "model".
 do not overdo it. no fake flattery. one sentence per message.`,

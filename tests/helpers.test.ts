@@ -568,3 +568,29 @@ test("playlist track uniqueness removes same artist title variants", async () =>
     ["trap_jump_explicit", "moon_river_frank", "moon_river_andy"],
   );
 });
+
+test("playlist diversity caps albums and artists", async () => {
+  const { enforcePlaylistDiversity } = await import("../src/bot/rotationBot");
+  const tracks = [
+    ["a1", "Song 1", "Artist A", "Album A"],
+    ["a2", "Song 2", "Artist A", "Album A"],
+    ["a3", "Song 3", "Artist A", "Album A"],
+    ["a4", "Song 4", "Artist A", "Album B"],
+    ["a5", "Song 5", "Artist A", "Album C"],
+    ["b1", "Song 6", "Artist B", "Album D"],
+  ].map(([spotifyTrackId, name, artist, album]) => ({
+    spotifyTrackId,
+    name,
+    artists: [artist],
+    album,
+    uri: `spotify:track:${spotifyTrackId}`,
+    source: "recommendation" as const,
+  }));
+
+  assert.deepEqual(
+    enforcePlaylistDiversity(tracks, { maxPerAlbum: 2, maxPerArtist: 4 }).map(
+      (track) => track.spotifyTrackId,
+    ),
+    ["a1", "a2", "a4", "a5", "b1"],
+  );
+});

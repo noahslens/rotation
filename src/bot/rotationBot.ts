@@ -373,6 +373,38 @@ export const formatPlaylistReadyReply = (
 const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
 
+const sourceCount = (tracks: MusicContext["tracks"], source: RotationTrack["source"]) =>
+  tracks.filter(
+    (track) => track.source === source || Boolean(track.sources?.includes(source)),
+  ).length;
+
+const deepPull = (tracks: MusicContext["tracks"]) =>
+  [...tracks]
+    .filter((track) => (track.popularity ?? 100) <= 45 && track.artists[0])
+    .sort(
+      (left, right) =>
+        (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0) ||
+        (left.popularity ?? 100) - (right.popularity ?? 100),
+    )[0];
+
+const onboardingProgressMessages = (context: MusicContext) => {
+  const savedCount = sourceCount(context.tracks, "saved");
+  const playlistCount = sourceCount(context.tracks, "playlist");
+  const topPull = deepPull(context.tracks);
+  const first =
+    savedCount >= 1_000
+      ? `ok wow, ${savedCount.toLocaleString("en-US")} liked songs is a real library lol`
+      : topPull
+        ? `ok ${topPull.name.toLowerCase()} by ${topPull.artists[0]?.toLowerCase()} is a deep pull`
+        : "ok yeah, there's enough here to make this personal.";
+  const second = topPull
+    ? `i'm using stuff like ${topPull.name.toLowerCase()} as signal, not just the obvious artists.`
+    : playlistCount
+      ? `also reading ${playlistCount.toLocaleString("en-US")} playlist songs for the deeper patterns.`
+      : fallbackDelayedProgress;
+  return [first, second];
+};
+
 export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
   if (/\balmost done\b/i.test(base)) return base;
@@ -882,6 +914,38 @@ export const uniquePlaylistTracks = <T extends RotationTrack>(
     }
     seenIds.add(track.spotifyTrackId);
     if (key) seenKeys.add(key);
+    return true;
+  });
+};
+
+export const enforcePlaylistDiversity = <T extends RotationTrack>(
+  tracks: T[],
+  limits: { maxPerAlbum?: number; maxPerArtist?: number },
+) => {
+  const albumCounts = new Map<string, number>();
+  const artistCounts = new Map<string, number>();
+  return tracks.filter((track) => {
+    const primaryArtist = normalizedLibraryText(track.artists[0]);
+    const album = normalizedLibraryText(track.album);
+    const albumKey = primaryArtist && album ? `${primaryArtist}::${album}` : undefined;
+    if (
+      limits.maxPerArtist !== undefined &&
+      primaryArtist &&
+      (artistCounts.get(primaryArtist) ?? 0) >= limits.maxPerArtist
+    ) {
+      return false;
+    }
+    if (
+      limits.maxPerAlbum !== undefined &&
+      albumKey &&
+      (albumCounts.get(albumKey) ?? 0) >= limits.maxPerAlbum
+    ) {
+      return false;
+    }
+    if (primaryArtist) {
+      artistCounts.set(primaryArtist, (artistCounts.get(primaryArtist) ?? 0) + 1);
+    }
+    if (albumKey) albumCounts.set(albumKey, (albumCounts.get(albumKey) ?? 0) + 1);
     return true;
   });
 };
@@ -1995,8 +2059,13 @@ export class RotationBot {
       ? `sick, ${name}. connect spotify here so i can get into it`
       : "connect spotify here so i can get into it";
     await sendLogged(space, user._id, reply);
-    await sendWithRetry(space, richlink(link));
-    await outbound(user._id, "sent spotify auth richlink");
+    try {
+      await space.send(richlink(link));
+      await outbound(user._id, "sent spotify auth richlink");
+    } catch (caught) {
+      console.warn("[rotation.spotify_auth_richlink_failed]", compactError(caught));
+      await outbound(user._id, "spotify auth richlink send failed");
+    }
   }
 
   private async maybeHandlePollAnswer(
@@ -2442,35 +2511,34 @@ export class RotationBot {
 
     let playlistLinkSent = false;
     let delayedProgressTimer: ReturnType<typeof setTimeout> | undefined;
+    let delayedProgressMessage = fallbackDelayedProgress;
 
     try {
-      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
-      const progressMessages = args.sendProgress
-        ? await this.ai
-            .tasteProgressMessages(context)
-            .catch(() => [
-              "your taste has a real point of view. i'm pulling from the strongest threads now.",
-              fallbackDelayedProgress,
-            ])
-        : [];
       if (args.sendProgress) {
-        await sendLogged(
-          space,
-          user._id,
-          progressMessages[0] ??
-            "your taste has a real point of view. i'm pulling from the strongest threads now.",
-        );
         delayedProgressTimer = setTimeout(() => {
           if (playlistLinkSent) return;
           void sendLogged(
             space,
             user._id,
-            formatDelayedProgressMessage(progressMessages[1]),
+            formatDelayedProgressMessage(delayedProgressMessage),
           ).catch((caught) => {
             console.warn("[rotation.delayed_progress_failed]", compactError(caught));
           });
         }, delayedProgressMs);
         delayedProgressTimer.unref?.();
+      }
+      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
+      const progressMessages = args.sendProgress
+        ? onboardingProgressMessages(context)
+        : [];
+      delayedProgressMessage = progressMessages[1] ?? fallbackDelayedProgress;
+      if (args.sendProgress) {
+        await sendLogged(
+          space,
+          user._id,
+          progressMessages[0] ??
+            "ok yeah, there's enough here to make this personal.",
+        );
       }
       const newOnly = shouldUseNewOnly(args);
       const rawPlan =
@@ -2552,11 +2620,11 @@ export class RotationBot {
         [...context.tracks, ...candidates, ...familiarTracks],
         openerQuery,
       );
-      const selected = newOnly
+      const selectedPool = newOnly
         ? uniquePlaylistTracks([
             ...filterKnownLibraryTracks(selectedWithBuffer, context.tracks),
             ...filterKnownLibraryTracks(candidates, context.tracks),
-          ], { allowSameArtistTitleRepeats }).slice(0, finalTargetCount)
+          ], { allowSameArtistTitleRepeats })
         : applyFamiliarMix({
             selected: selectedWithBuffer,
             candidates,
@@ -2565,6 +2633,13 @@ export class RotationBot {
             familiarPercent,
             allowSameArtistTitleRepeats,
           });
+      const selected =
+        args.requestKind === "initial"
+          ? enforcePlaylistDiversity(selectedPool, {
+              maxPerAlbum: 2,
+              maxPerArtist: 4,
+            }).slice(0, finalTargetCount)
+          : selectedPool.slice(0, finalTargetCount);
 
       if (selected.length === 0) {
         throw new Error("no tracks selected");
@@ -2604,20 +2679,23 @@ export class RotationBot {
         now: Date.now(),
       });
 
-      const reply = formatPlaylistReadyReply(
-        await this.safeReply(
-          {
-            kind: "playlist_ready",
-            userText: args.prompt,
-            playlistName: playlist.name,
-            extra: plan.userFacingSummary,
-            conversationHistory: args.conversationHistory,
-          },
-          `made ${playlist.name}`,
-        ),
-        `made ${playlist.name}`,
-        args.avoidReaction,
-      );
+      const reply =
+        args.requestKind === "initial"
+          ? "first rotation is ready. lmk what you think."
+          : formatPlaylistReadyReply(
+              await this.safeReply(
+                {
+                  kind: "playlist_ready",
+                  userText: args.prompt,
+                  playlistName: playlist.name,
+                  extra: plan.userFacingSummary,
+                  conversationHistory: args.conversationHistory,
+                },
+                `made ${playlist.name}. lmk what you think.`,
+              ),
+              `made ${playlist.name}. lmk what you think.`,
+              args.avoidReaction,
+            );
       const latestUser =
         args.deferDeliveryUntilPaid && args.requestKind === "user"
           ? await convex.query(api.users.getById, { userId: user._id })

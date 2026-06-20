@@ -28,6 +28,10 @@ const providerOptions = {
     },
   },
 };
+const generationSettings = {
+  temperature: 1,
+  providerOptions,
+};
 
 const styleGuide = [
   "you are rotation, a music concierge that texts like a sharp friend.",
@@ -49,6 +53,7 @@ const playlistJudgmentRules = [
   "choose the opener deliberately. track 1 should be the most situation-perfect tone setter, not merely the strongest personal taste match. in a group setting it should feel immediate, recognizable, and playable.",
   "if the user explicitly names a first track, opener, or start-with song, put that exact recording first once. do not include alternate versions, covers, remixes, or repeated versions of that song unless the user explicitly asks for multiple versions.",
   "avoid repeated versions of the same song title in one playlist.",
+  "avoid lazy clustering from one artist or album. a playlist should feel curated across artists, albums, scenes, and textures unless the user explicitly asks for a narrow artist or album lane.",
   "for culturally obvious requests, include exact song and artist search queries for must-consider anchors so spotify can return them. for example, a high school graduation pool party should consider the spins mac miller plus sunny graduation, pool, senior summer, and party staples.",
   "after the essential situation anchors are covered, use the user's taste to shape texture, adjacent picks, sequencing, and deeper cuts.",
 ].join("\n");
@@ -265,7 +270,7 @@ export class RotationAi {
     const result = await generateObject({
       model: model(),
       schema: intentSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 ${conversationRules}
@@ -293,7 +298,7 @@ ${JSON.stringify(
     const result = await generateObject({
       model: model(),
       schema: firstNameSchema,
-      providerOptions,
+      ...generationSettings,
       system: styleGuide,
       prompt: `extract the user's preferred first name from this reply. if they gave multiple words, choose the name they would expect us to use.\n\nreply: ${message}`,
     });
@@ -312,7 +317,7 @@ ${JSON.stringify(
     const result = await generateObject({
       model: model(),
       schema: playlistPlanSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 you choose music by using the user's full stored spotify song history plus spotify catalog search.
@@ -329,6 +334,7 @@ think deeply about patterns across the liked songs: recurring artists, microgenr
 for the first rotation / onboarding discovery playlist, do not pick songs the user merely might like. every selected song should feel almost certain to land based on repeated evidence in savedTracks and weighted playlist history.
 for the first rotation / onboarding discovery playlist, prefer fewer but stronger taste bets over speculative variety. cross-genre range is required when each genre lane is clearly supported by their liked songs.
 for the first rotation / onboarding discovery playlist, infer the user's major genre/sound clusters from savedTracks and strong user-owned playlists. any cluster that represents roughly 10 percent or more of the library evidence must be represented. do not collapse the playlist into only one or two genres when their library is broader.
+for the first rotation / onboarding discovery playlist, do not overuse one artist or album. code will enforce max 2 tracks per album and max 4 per primary artist, but you should usually stay below those caps unless that artist is an unusually strong fit.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
 if recentConversation creates ambiguity, use needsPoll with options that separate the fresh interpretation from the carried-over interpretation, like london only vs sad london.
@@ -377,7 +383,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     const result = await generateObject({
       model: model(),
       schema: selectedTracksSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
@@ -393,6 +399,7 @@ if familiarMixPercent is provided in balanced mode, hit that approximate percent
 if familiarMixPercent is 100, use familiarTracks only unless there are not enough fitting songs.
 for balanced group/social playlists, include the strongest situation anchors before taste-only picks, and sequence the opener as the most context-perfect song available.
 avoid duplicate artists too close together unless the prompt asks for one artist.
+avoid pulling a lazy block from one album. usually one track per album is enough unless the album is central to the request.
 never select the exact same spotify track id twice.
 avoid selecting multiple versions of the same song by the same primary artist unless the user explicitly asked for multiple versions.
 return only ids from the provided lists that are allowed by the novelty mode.`,
@@ -418,7 +425,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
     const result = await generateObject({
       model: model(),
       schema: tasteSummarySchema,
-      providerOptions,
+      ...generationSettings,
       system: styleGuide,
       prompt: `summarize this user's music taste and infer activity preferences from playlist names. be concrete and compact.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
     });
@@ -429,7 +436,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
     const result = await generateObject({
       model: model(),
       schema: tasteProgressSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 write real, specific compliments about someone's music taste while rotation is building their first playlist.
@@ -463,13 +470,14 @@ do not overdo it. no fake flattery. one sentence per message.`,
   }) {
     const result = await generateText({
       model: model(),
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 ${conversationRules}
 ${deliveryFacts}
 if kind is playlist_ready, do not tell the user to check spotify, check their library, wait a second, or look at the top of their library. the app sends the playlist link separately.
-if kind is playlist_ready, do not mention the playlist's track count or number of songs.`,
+if kind is playlist_ready, do not mention the playlist's track count or number of songs.
+if kind is playlist_ready, keep it to 1 short sentence. sound like a text, not a review. do not say mapped, extremes, bridging, adjacent gold, zero repeats, saved library, or pure. invite feedback with something like lmk what you think.`,
       prompt: JSON.stringify({
         ...args,
         conversationHistory: undefined,
@@ -488,7 +496,7 @@ if kind is playlist_ready, do not mention the playlist's track count or number o
     const result = await generateObject({
       model: model(),
       schema: textingActionSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 choose how rotation should respond in imessage.
@@ -543,7 +551,7 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
     const result = await generateObject({
       model: model(),
       schema: playlistEditPlanSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 you edit an existing spotify playlist. do not create a new playlist.
@@ -580,7 +588,7 @@ if the edit request is ambiguous enough that you cannot safely act, ask a short 
   ) {
     const result = await generateText({
       model: model(),
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 ${conversationRules}`,
@@ -639,7 +647,7 @@ ${JSON.stringify(
     const result = await generateObject({
       model: model(),
       schema: voiceActionSchema,
-      providerOptions,
+      ...generationSettings,
       system: `${styleGuide}
 
 listen to the raw audio voice note and decide how rotation should handle it.
@@ -753,7 +761,7 @@ photos are provided below, each preceded by its id.`,
     const result = await generateObject({
       model: coverModel(),
       schema: coverSelectionSchema,
-      providerOptions,
+      ...generationSettings,
       system: styleGuide,
       messages: [{ role: "user", content }],
     });

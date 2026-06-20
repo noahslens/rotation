@@ -1,5 +1,12 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
-import { attachment, contact, poll, richlink, type ContentInput } from "spectrum-ts";
+import {
+  Emoji,
+  attachment,
+  contact,
+  poll,
+  richlink,
+  type ContentInput,
+} from "spectrum-ts";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { RotationAi } from "../ai/rotationAi";
 import { env } from "../config/env";
@@ -33,6 +40,31 @@ const isTextMessage = (
   message: Message,
 ): message is Message & { content: { type: "text"; text: string } } =>
   message.content.type === "text";
+
+type ReactionMessage = Message & {
+  content: { type: "reaction"; emoji: string; target: Message };
+};
+
+const isReactionMessage = (message: Message): message is ReactionMessage =>
+  message.content.type === "reaction";
+
+export const tapbackFeedbackReply = (emoji: string) => {
+  switch (emoji) {
+    case Emoji.dislike:
+      return "noted - tell me what missed and i'll tune the next one.";
+    case Emoji.question:
+      return "what should i clarify?";
+    default:
+      return undefined;
+  }
+};
+
+const tapbackLogText = (message: ReactionMessage) => {
+  const target = message.content.target.content;
+  const targetSummary =
+    target.type === "text" ? target.text.slice(0, 160) : target.type;
+  return `tapback ${message.content.emoji} on ${targetSummary}`;
+};
 
 const outbound = async (userId: Id<"users">, text: string) => {
   await convex.mutation(api.conversation.logTurn, {
@@ -219,7 +251,12 @@ export class RotationBot {
   ) {}
 
   async handle(space: Space, message: Message) {
-    if (!isTextMessage(message) || message.direction === "outbound") return;
+    if (message.direction === "outbound") return;
+    if (isReactionMessage(message)) {
+      await this.handleTapback(space, message);
+      return;
+    }
+    if (!isTextMessage(message)) return;
 
     const platformUserId = message.sender?.id;
     if (!platformUserId) return;
@@ -252,6 +289,7 @@ export class RotationBot {
       await message.read().catch((caught) => {
         console.warn("[rotation.read_failed]", compactError(caught));
       });
+      await this.tapback(message, Emoji.like);
       await space.startTyping().catch((caught) => {
         console.warn("[rotation.typing_start_failed]", compactError(caught));
       });
@@ -269,6 +307,39 @@ export class RotationBot {
         console.error("[rotation.fallback_send_failed]", sendError);
       });
     }
+  }
+
+  private async handleTapback(space: Space, message: ReactionMessage) {
+    const platformUserId = message.sender?.id;
+    if (!platformUserId) return;
+
+    const now = Date.now();
+    const user = await convex.mutation(api.users.upsertFromMessage, {
+      platform: message.platform,
+      platformUserId,
+      now,
+    });
+    if (!user) return;
+
+    await convex.mutation(api.conversation.logTurn, {
+      userId: user._id,
+      direction: "in",
+      text: tapbackLogText(message),
+      messageId: message.id,
+      now,
+    });
+    await message.read().catch((caught) => {
+      console.warn("[rotation.tapback_read_failed]", compactError(caught));
+    });
+
+    const reply = tapbackFeedbackReply(message.content.emoji);
+    if (reply) await sendLogged(space, user._id, reply);
+  }
+
+  private async tapback(message: Message, emoji: string) {
+    await message.react(emoji).catch((caught) => {
+      console.warn("[rotation.tapback_failed]", compactError(caught));
+    });
   }
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {

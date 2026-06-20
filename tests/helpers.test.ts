@@ -44,3 +44,12 @@ test("pre-spotify link detector requires an explicit link request", async () => 
   assert.equal(wantsSpotifyLink("how does linking work?"), false);
   assert.equal(wantsSpotifyLink("what can you do before i connect"), false);
 });
+
+test("tapback feedback maps only actionable reactions to replies", async () => {
+  const { tapbackFeedbackReply } = await import("../src/bot/rotationBot");
+
+  assert.equal(tapbackFeedbackReply("👎"), "noted - tell me what missed and i'll tune the next one.");
+  assert.equal(tapbackFeedbackReply("❓"), "what should i clarify?");
+  assert.equal(tapbackFeedbackReply("👍"), undefined);
+  assert.equal(tapbackFeedbackReply("❤️"), undefined);
+});

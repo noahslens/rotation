@@ -14,6 +14,12 @@ const app = await Spectrum({
 const bot = createRotationBot();
 const stopBackgroundJobs = startBackgroundJobs(app, bot);
 
+console.info("[rotation.startup]", {
+  providers: ["iMessage"],
+  convexUrl: process.env.CONVEX_URL,
+  convexSiteUrl: process.env.CONVEX_SITE_URL,
+});
+
 const shutdown = async () => {
   stopBackgroundJobs();
   await app.stop();

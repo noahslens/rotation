@@ -95,6 +95,14 @@ export class RotationBot {
     const platformUserId = message.sender?.id;
     if (!platformUserId) return;
 
+    console.info("[rotation.inbound]", {
+      platform: message.platform,
+      spaceId: space.id,
+      sender: platformUserId,
+      messageId: message.id,
+      text: message.content.text,
+    });
+
     const now = Date.now();
     const user = await convex.mutation(api.users.upsertFromMessage, {
       platform: message.platform,
@@ -112,11 +120,15 @@ export class RotationBot {
     });
 
     try {
-      await space.responding(async () => {
+      await space.startTyping();
+      try {
         await this.route(space, user, message.content.text);
-      });
+      } finally {
+        await space.stopTyping();
+      }
     } catch (caught) {
       await this.recordFailure("message_handler", user._id, { text: message.content.text }, caught);
+      console.error("[rotation.error]", caught);
       await sendLogged(space, user._id, fallbackCopy.error);
     }
   }

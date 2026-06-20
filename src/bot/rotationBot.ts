@@ -860,6 +860,49 @@ export const filterKnownLibraryTracks = <T extends RotationTrack>(
   });
 };
 
+const allowsRepeatedSongVersions = (prompt: string) =>
+  /\b(every|all|multiple|different)\b.{0,24}\b(versions?|recordings?|covers?|remixes?|takes?)\b/i.test(
+    prompt,
+  ) ||
+  /\b(versions?|recordings?|covers?|remixes?|takes?)\b.{0,24}\b(every|all|multiple|different)\b/i.test(
+    prompt,
+  );
+
+export const uniquePlaylistTracks = <T extends RotationTrack>(
+  tracks: T[],
+  options: { allowSameArtistTitleRepeats?: boolean } = {},
+) => {
+  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
+  return tracks.filter((track) => {
+    if (seenIds.has(track.spotifyTrackId)) return false;
+    const key = libraryTrackKey(track);
+    if (!options.allowSameArtistTitleRepeats && key && seenKeys.has(key)) {
+      return false;
+    }
+    seenIds.add(track.spotifyTrackId);
+    if (key) seenKeys.add(key);
+    return true;
+  });
+};
+
+const filterTracksAlreadyPresentBySong = <T extends RotationTrack>(
+  tracks: T[],
+  existingTracks: Array<Pick<RotationTrack, "spotifyTrackId" | "name" | "artists">>,
+) => {
+  const existingIds = new Set(existingTracks.map((track) => track.spotifyTrackId));
+  const existingKeys = new Set(
+    existingTracks
+      .map((track) => libraryTrackKey(track))
+      .filter((key): key is string => Boolean(key)),
+  );
+  return tracks.filter((track) => {
+    if (existingIds.has(track.spotifyTrackId)) return false;
+    const key = libraryTrackKey(track);
+    return !key || !existingKeys.has(key);
+  });
+};
+
 const newMusicIntent = new Set([
   "discovery",
   "more_like_playlist",
@@ -968,6 +1011,61 @@ const shouldUseNewOnly = (args: {
   );
 };
 
+const familiarMixOptions = [
+  "25% current",
+  "50% current",
+  "75% current",
+  "100% current",
+];
+
+export const familiarMixPercent = (value: string | undefined | null) => {
+  const match = value?.match(/\b(25|50|75|100)\s*%?/);
+  return match ? Number(match[1]) : undefined;
+};
+
+const explicitSongCount = (text: string) => {
+  const match = normalize(text).match(/\b(\d{1,3})\s*(?:songs?|tracks?|cuts?)\b/);
+  if (!match) return undefined;
+  const count = Number(match[1]);
+  return Number.isInteger(count) ? count : undefined;
+};
+
+const explicitDurationMinutes = (text: string) => {
+  const clean = normalize(text);
+  const match = clean.match(/\b(\d{1,3})\s*(h|hr|hrs|hour|hours|min|mins|minute|minutes)\b/);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  if (!Number.isInteger(amount)) return undefined;
+  return match[2]?.startsWith("h") ? amount * 60 : amount;
+};
+
+export const familiarMixPoll = (
+  text: string,
+  intent?: string,
+): { question: string; options: string[] } | null => {
+  if (intent !== "activity_playlist") return null;
+  if (asksForNewMusic(text) || explicitlyAllowsKnownMusic(text)) return null;
+  if (familiarMixPercent(text) !== undefined) return null;
+
+  const clean = normalize(text);
+  const broadActivity =
+    /\b(gym|lift|lifting|workout|work out|leg day|push day|pull day|run|running|focus|study|studying|code|coding|repo|essay|work|party|pregame|going out|night out|drive|road trip|pool|beach|graduation|birthday|cleaning|cookout|barbecue|bbq)\b/.test(
+      clean,
+    );
+  const count = explicitSongCount(text);
+  const duration = explicitDurationMinutes(text);
+  const broadByScale = (count !== undefined && count >= 35) || (duration !== undefined && duration >= 45);
+  if ((count !== undefined && count < 35) || (duration !== undefined && duration < 45)) {
+    return null;
+  }
+  if (!broadActivity && !broadByScale) return null;
+
+  return {
+    question: "how much should be songs you already know?",
+    options: familiarMixOptions,
+  };
+};
+
 const discoveryScore = (track: CandidateTrack, index: number) => {
   const popularity = track.popularity ?? 45;
   const sweetSpotPenalty = Math.abs(popularity - 52) * 0.7;
@@ -981,6 +1079,80 @@ const rankDiscoveryCandidates = (tracks: CandidateTrack[]) =>
     .map((track, index) => ({ track, score: discoveryScore(track, index) }))
     .sort((left, right) => left.score - right.score)
     .map(({ track }) => track);
+
+const takeInto = <T extends RotationTrack>(
+  result: T[],
+  pool: T[],
+  count: number,
+  options: { allowSameArtistTitleRepeats?: boolean },
+) => {
+  if (count <= 0) return;
+  const existing = uniquePlaylistTracks(result, options);
+  result.splice(0, result.length, ...existing);
+  for (const track of pool) {
+    if (result.length >= count) return;
+    const next = uniquePlaylistTracks([...result, track], options);
+    if (next.length > result.length) result.push(track);
+  }
+};
+
+const applyFamiliarMix = (args: {
+  selected: RotationTrack[];
+  candidates: CandidateTrack[];
+  familiarTracks: RotationTrack[];
+  targetCount: number;
+  familiarPercent?: number;
+  allowSameArtistTitleRepeats?: boolean;
+}) => {
+  const options = {
+    allowSameArtistTitleRepeats: args.allowSameArtistTitleRepeats,
+  };
+  if (args.familiarPercent === undefined) {
+    return uniquePlaylistTracks(
+      [...args.selected, ...args.candidates, ...args.familiarTracks],
+      options,
+    ).slice(0, args.targetCount);
+  }
+
+  const familiarIds = new Set(
+    args.familiarTracks.map((track) => track.spotifyTrackId),
+  );
+  const selected = uniquePlaylistTracks(args.selected, options);
+  const familiarPool = uniquePlaylistTracks(
+    [
+      ...selected.filter((track) => familiarIds.has(track.spotifyTrackId)),
+      ...args.familiarTracks,
+    ],
+    options,
+  );
+  const newPool = uniquePlaylistTracks(
+    [
+      ...selected.filter((track) => !familiarIds.has(track.spotifyTrackId)),
+      ...args.candidates,
+    ],
+    options,
+  );
+  const familiarTarget =
+    args.familiarPercent >= 100
+      ? args.targetCount
+      : Math.min(
+          familiarPool.length,
+          Math.round(args.targetCount * (args.familiarPercent / 100)),
+        );
+  const newTarget =
+    args.familiarPercent >= 100
+      ? 0
+      : Math.min(newPool.length, args.targetCount - familiarTarget);
+
+  const result: RotationTrack[] = [];
+  takeInto(result, familiarPool, familiarTarget, options);
+  takeInto(result, newPool, familiarTarget + newTarget, options);
+  takeInto(result, familiarPool, args.targetCount, options);
+  if (args.familiarPercent < 100) {
+    takeInto(result, newPool, args.targetCount, options);
+  }
+  return uniquePlaylistTracks(result, options).slice(0, args.targetCount);
+};
 
 const hasActiveSubscription = (user: Pick<Doc<"users">, "subscriptionStatus">) =>
   user.subscriptionStatus === "active" || user.subscriptionStatus === "trialing";
@@ -1699,7 +1871,15 @@ export class RotationBot {
       intent.intent,
     );
     if (carryoverPoll) {
-      await this.askCarryoverPoll(space, user, text, carryoverPoll);
+      await this.askPlaylistPoll(space, user, text, carryoverPoll);
+      return;
+    }
+
+    const shouldGateForPayment =
+      Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
+    const mixPoll = shouldGateForPayment ? null : familiarMixPoll(text, intent.intent);
+    if (mixPoll) {
+      await this.askPlaylistPoll(space, user, text, mixPoll);
       return;
     }
 
@@ -1710,8 +1890,6 @@ export class RotationBot {
     );
     await this.tapback(sourceMessage, workingReaction, user._id);
 
-    const shouldGateForPayment =
-      Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
     if (shouldGateForPayment) {
       await this.withTyping(space, async () => {
         await this.sendPaywall(space, user, { buildingPlaylist: true });
@@ -1890,11 +2068,11 @@ export class RotationBot {
     return true;
   }
 
-  private async askCarryoverPoll(
+  private async askPlaylistPoll(
     space: Space,
     user: Doc<"users">,
     text: string,
-    carryoverPoll: { question: string; options: string[] },
+    playlistPoll: { question: string; options: string[] },
   ) {
     const shouldGateForPayment =
       Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
@@ -1902,16 +2080,16 @@ export class RotationBot {
       userId: user._id,
       originalPrompt: text,
       deliveryMode: shouldGateForPayment ? "after_payment" : "immediate",
-      question: carryoverPoll.question,
-      options: carryoverPoll.options,
+      question: playlistPoll.question,
+      options: playlistPoll.options,
       expiresAt: Date.now() + 30 * 60 * 1000,
       now: Date.now(),
     });
     await this.withTyping(space, async () => {
-      await space.send(poll(carryoverPoll.question, carryoverPoll.options));
+      await space.send(poll(playlistPoll.question, playlistPoll.options));
       await outbound(
         user._id,
-        `${carryoverPoll.question} ${carryoverPoll.options.join(" / ")}`,
+        `${playlistPoll.question} ${playlistPoll.options.join(" / ")}`,
       );
     });
   }
@@ -2064,7 +2242,13 @@ export class RotationBot {
           newOnly: true,
           conversationHistory,
         });
-        finalTracks = uniqueById([...baseTracks, ...additions]).slice(0, 200);
+        finalTracks = uniqueById([
+          ...baseTracks,
+          ...filterTracksAlreadyPresentBySong(
+            uniquePlaylistTracks(additions),
+            baseTracks,
+          ),
+        ]).slice(0, 200);
       } else if (plan.action === "replace_tracks") {
         const targetCount = Math.max(
           8,
@@ -2081,7 +2265,7 @@ export class RotationBot {
           newOnly: false,
           conversationHistory,
         });
-        finalTracks = selected.slice(0, targetCount);
+        finalTracks = uniquePlaylistTracks(selected).slice(0, targetCount);
       }
 
       if (finalTracks) {
@@ -2154,6 +2338,7 @@ export class RotationBot {
       candidates,
       args.currentTracks,
       args.newOnly,
+      undefined,
       args.conversationHistory,
     );
 
@@ -2348,9 +2533,12 @@ export class RotationBot {
       const candidates = newOnly
         ? rankDiscoveryCandidates(rawCandidates)
         : rawCandidates;
-      const familiarTracks = newOnly
-        ? []
-        : this.familiarTracks(context.tracks, plan.familiarTrackIds);
+      const familiarTracks = this.familiarTracks(
+        context.tracks,
+        plan.familiarTrackIds,
+      );
+      const familiarPercent = familiarMixPercent(args.pollAnswer);
+      const allowSameArtistTitleRepeats = allowsRepeatedSongVersions(args.prompt);
       const selectedWithBuffer = finalizeSelectedTracks(
         await this.selectTracks(
           args.prompt,
@@ -2358,17 +2546,25 @@ export class RotationBot {
           candidates,
           familiarTracks,
           newOnly,
+          familiarPercent,
           args.conversationHistory,
         ),
         [...context.tracks, ...candidates, ...familiarTracks],
         openerQuery,
       );
       const selected = newOnly
-        ? uniqueById([
+        ? uniquePlaylistTracks([
             ...filterKnownLibraryTracks(selectedWithBuffer, context.tracks),
             ...filterKnownLibraryTracks(candidates, context.tracks),
-          ]).slice(0, finalTargetCount)
-        : selectedWithBuffer.slice(0, finalTargetCount);
+          ], { allowSameArtistTitleRepeats }).slice(0, finalTargetCount)
+        : applyFamiliarMix({
+            selected: selectedWithBuffer,
+            candidates,
+            familiarTracks,
+            targetCount: finalTargetCount,
+            familiarPercent,
+            allowSameArtistTitleRepeats,
+          });
 
       if (selected.length === 0) {
         throw new Error("no tracks selected");
@@ -2560,8 +2756,17 @@ export class RotationBot {
       .map((id) => byId.get(id))
       .filter((track): track is Doc<"spotifyTracks"> => Boolean(track));
     const fallback = tracks
-      .filter((track) => track.source === "saved" || track.source === "top")
-      .slice(0, 200);
+      .filter(
+        (track) =>
+          track.source === "saved" ||
+          track.source === "top" ||
+          track.source === "playlist" ||
+          track.sources?.some((source) =>
+            source === "saved" || source === "top" || source === "playlist",
+          ),
+      )
+      .sort((left, right) => (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0))
+      .slice(0, 400);
     return uniqueById([...preferred, ...fallback]).map((track) => ({
       spotifyTrackId: track.spotifyTrackId,
       name: track.name,
@@ -2584,6 +2789,7 @@ export class RotationBot {
     candidates: CandidateTrack[],
     familiarTracks: RotationTrack[],
     newOnly: boolean,
+    familiarMixPercent?: number,
     conversationHistory?: ConversationTurn[],
   ) {
     const chosen = await this.ai.chooseTracks({
@@ -2592,6 +2798,7 @@ export class RotationBot {
       candidates,
       familiarTracks,
       newOnly,
+      familiarMixPercent,
       conversationHistory,
     });
     const byId = new Map<string, RotationTrack>();

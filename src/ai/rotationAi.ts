@@ -339,6 +339,8 @@ if countMode is fixed, set targetCount exactly to defaultTargetCount.
 if countMode is dynamic, set targetCount based on the user's prompt, explicit count, explicit time window, and activity.
 for dynamic counts: obey explicit requested song counts when present; if the user specifies a duration, estimate about 3 minutes per song; for quick walks/showers/short drives use 12-25 songs; for runs/gym/focus sessions use 35-80; for parties/road trips/deep discovery use 80-200.
 if countMode is dynamic and the prompt does not imply duration or scale, choose the smallest playlist that feels complete for the task instead of defaulting to 50.
+if pollAnswer says 25% current, 50% current, 75% current, or 100% current, treat that as the requested share of songs from the user's existing liked/saved/playlist history. choose familiarTrackIds from the full musicContext for that share, and use searchQueries for the new-song share.
+if pollAnswer says 100% current, use current library songs only unless there are not enough fitting songs.
 for new music/discovery, use saved songs, top tracks, and weighted playlist tracks as taste evidence only. the playlist itself must be music outside their known library.
 for new music/discovery, find layups they are almost certain to fall in love with: very close in taste, repeatedly supported by their saved tracks, but not already liked and not obvious top hits they have probably heard.
 for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
@@ -369,6 +371,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     candidates: CandidateTrack[];
     familiarTracks: RotationTrack[];
     newOnly?: boolean;
+    familiarMixPercent?: number;
     conversationHistory?: ConversationTurn[];
   }) {
     const result = await generateObject({
@@ -386,14 +389,19 @@ if novelty mode is new_music_only, return only candidate track ids. use familiar
 for new music/discovery, prioritize tracks that are almost certain to land with this user, not merely plausible. use repeated evidence from familiarTracks and the playlist plan before novelty.
 for new music/discovery, prioritize tracks that fit the user's taste but are less obvious: adjacent artists, deeper cuts, and non-super-mainstream songs. avoid huge hits unless explicitly requested.
 if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks from the user's history when they strongly fit the request.
+if familiarMixPercent is provided in balanced mode, hit that approximate percentage from familiarTracks. the remaining percentage should come from candidates that fit both the user's taste and the requested mood/activity.
+if familiarMixPercent is 100, use familiarTracks only unless there are not enough fitting songs.
 for balanced group/social playlists, include the strongest situation anchors before taste-only picks, and sequence the opener as the most context-perfect song available.
 avoid duplicate artists too close together unless the prompt asks for one artist.
+never select the exact same spotify track id twice.
+avoid selecting multiple versions of the same song by the same primary artist unless the user explicitly asked for multiple versions.
 return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: JSON.stringify(
         {
           userPrompt: args.prompt,
           plan: args.plan,
           noveltyMode: args.newOnly ? "new_music_only" : "balanced",
+          familiarMixPercent: args.familiarMixPercent,
           targetCount: args.plan.targetCount,
           recentConversation: conversationForModel(args.conversationHistory),
           candidates: args.candidates.slice(0, 320).map(compactTrack),

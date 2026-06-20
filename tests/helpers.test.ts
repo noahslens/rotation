@@ -251,6 +251,20 @@ test("carryover ambiguity poll catches recent mood plus new short theme", async 
   );
 });
 
+test("familiar mix poll asks on broad activity playlists only", async () => {
+  const { familiarMixPercent, familiarMixPoll } = await import("../src/bot/rotationBot");
+
+  assert.deepEqual(familiarMixPoll("lifting playlist", "activity_playlist"), {
+    question: "how much should be songs you already know?",
+    options: ["25% current", "50% current", "75% current", "100% current"],
+  });
+  assert.equal(familiarMixPoll("10 song lifting playlist", "activity_playlist"), null);
+  assert.equal(familiarMixPoll("new lifting playlist", "activity_playlist"), null);
+  assert.equal(familiarMixPoll("lifting playlist 75% current", "activity_playlist"), null);
+  assert.equal(familiarMixPoll("songs i'd fw", "discovery"), null);
+  assert.equal(familiarMixPercent("50% current"), 50);
+});
+
 test("voice note detector handles inbound audio attachments", async () => {
   const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
   const message = {
@@ -513,5 +527,44 @@ test("known library filter removes alternate ids for existing songs", async () =
   assert.deepEqual(
     filterKnownLibraryTracks(candidates, library).map((track) => track.spotifyTrackId),
     ["andy_moon_river", "new_song"],
+  );
+});
+
+test("playlist track uniqueness removes same artist title variants", async () => {
+  const { uniquePlaylistTracks } = await import("../src/bot/rotationBot");
+  const tracks = [
+    {
+      spotifyTrackId: "trap_jump_explicit",
+      name: "Trap Jump",
+      artists: ["Ken Carson"],
+      uri: "spotify:track:trap_jump_explicit",
+      source: "recommendation" as const,
+    },
+    {
+      spotifyTrackId: "trap_jump_clean",
+      name: "Trap Jump - Clean",
+      artists: ["Ken Carson"],
+      uri: "spotify:track:trap_jump_clean",
+      source: "recommendation" as const,
+    },
+    {
+      spotifyTrackId: "moon_river_frank",
+      name: "Moon River",
+      artists: ["Frank Ocean"],
+      uri: "spotify:track:moon_river_frank",
+      source: "recommendation" as const,
+    },
+    {
+      spotifyTrackId: "moon_river_andy",
+      name: "Moon River",
+      artists: ["Andy Williams"],
+      uri: "spotify:track:moon_river_andy",
+      source: "recommendation" as const,
+    },
+  ];
+
+  assert.deepEqual(
+    uniquePlaylistTracks(tracks).map((track) => track.spotifyTrackId),
+    ["trap_jump_explicit", "moon_river_frank", "moon_river_andy"],
   );
 });

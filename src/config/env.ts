@@ -18,7 +18,6 @@ export const env = {
   spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? "",
   spotifyTokenEncryptionKey: process.env.SPOTIFY_TOKEN_ENCRYPTION_KEY ?? "",
   stripePaymentLink: process.env.STRIPE_PAYMENT_LINK ?? "",
-  stripeTestCouponCode: process.env.STRIPE_TEST_COUPON_CODE ?? "ROTATIONTEST100",
 };
 
 export const requireEnv = (name: keyof typeof env) => {

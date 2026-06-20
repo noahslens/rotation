@@ -30,7 +30,6 @@ Test-mode billing is already created:
 - product: `Rotation`
 - price: `$29.99/year`
 - payment link: `https://buy.stripe.com/test_3cI9ATgACa1o5cW0g39IQ00`
-- testing promo code: `ROTATIONTEST100`
 - webhook: `https://precise-toad-279.convex.site/stripe/webhook`
 
 The app appends `client_reference_id=<convex user id>` to the payment link so
@@ -51,7 +50,6 @@ SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 SPOTIFY_TOKEN_ENCRYPTION_KEY=
 STRIPE_PAYMENT_LINK=https://buy.stripe.com/test_3cI9ATgACa1o5cW0g39IQ00
-STRIPE_TEST_COUPON_CODE=ROTATIONTEST100
 ```
 
 ## Run

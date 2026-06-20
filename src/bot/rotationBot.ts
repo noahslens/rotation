@@ -410,6 +410,27 @@ export const wantsSpotifyLink = (text: string) => {
   );
 };
 
+export const unsupportedMusicServiceReply = (text: string) => {
+  const clean = normalize(text);
+  if (!clean) return undefined;
+
+  const service =
+    /\b(apple music|soundcloud|youtube music|yt music|ytmusic|youtube|tidal|amazon music|deezer|pandora|bandcamp)\b/.test(
+      clean,
+    );
+  if (!service) return undefined;
+
+  const supportQuestion =
+    /\b(support|work with|connect|link|integrate|integration|available|use|do you do|can you do|can i use|is there|when)\b/.test(
+      clean,
+    );
+  const shortServiceQuestion = clean.length <= 40 && /\?$/.test(text.trim());
+
+  if (!supportQuestion && !shortServiceQuestion) return undefined;
+
+  return "not yet. spotify is the only one live rn, but we're rushing to add apple music, soundcloud, youtube music, and the rest asap. i'll text you when they're ready.";
+};
+
 const shouldUseNewOnly = (args: {
   requestKind: "initial" | "weekly" | "user";
   intent?: string;
@@ -1078,6 +1099,14 @@ export class RotationBot {
     text: string,
     sourceMessage: Message,
   ) {
+    const unsupportedServiceReply = unsupportedMusicServiceReply(text);
+    if (unsupportedServiceReply) {
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, unsupportedServiceReply);
+      });
+      return;
+    }
+
     if (wantsSpotifyLink(text)) {
       await this.withTyping(space, async () => {
         await this.sendSpotifyLink(space, user);

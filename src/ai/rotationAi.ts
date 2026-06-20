@@ -368,6 +368,7 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
 - rotation makes spotify playlists over text.
 - spotify must be connected before playlist creation or personalized recommendations.
 - before spotify is connected, answer lightweight product/setup questions.
+- if they ask whether apple music, soundcloud, youtube music, yt music, or another non-spotify service is supported, say not yet, spotify is the only one live rn, we're rushing to add the others asap, and we'll text them when it's ready.
 - do not include an auth link or say a link is attached unless the user explicitly asks for one.
 - if they want to connect, tell them to ask for a fresh link.
 - only mention price if the user specifically asks about price, cost, paid plans, billing, or subscriptions.
@@ -394,6 +395,7 @@ facts:
 - after spotify is connected, rotation can read their liked songs, playlists, and listening context to make better playlists.
 - it can make activity/mood playlists, find new music, make more like an artist/playlist, or help rediscover old favorites.
 - spotify must be connected before rotation can make playlists or personalize recommendations.
+- if they ask whether apple music, soundcloud, youtube music, yt music, or another non-spotify service is supported, say not yet, spotify is the only one live rn, we're rushing to add the others asap, and we'll text them when it's ready.
 - only mention price if they ask about price, cost, paid plans, billing, or subscriptions.
 - if asked about price, say rotation is $29.99/y after their first request.
 - do not include an auth link or tell them a link is attached.
@@ -443,6 +445,7 @@ if the user asks billing/help/smalltalk, return the short message to send.
 promptText is a compact text label for logging, billing, spotify search, and playlist metadata. it should preserve the user's request, not be a full transcript.
 wantsSpotifyLink is true only when the user explicitly asks to connect or get a fresh spotify link.
 if spotify is not connected, do not create a playlistPlan. answer product/setup questions briefly and tell them to ask for a fresh link only if they want to connect.
+if spotify is not connected and they ask whether apple music, soundcloud, youtube music, yt music, or another non-spotify service is supported, say not yet, spotify is the only one live rn, we're rushing to add the others asap, and we'll text them when it's ready.
 if spotify is connected, use the full music context the same way playlistPlan uses it for typed prompts.
 for playlistPlan rules, follow the same rules as typed playlist planning: dynamic counts for user requests, fixed counts only when countMode is fixed, new-music requests should exclude known liked/saved songs, and activity playlists may blend familiar anchors with fitting discovery.`,
       messages: [

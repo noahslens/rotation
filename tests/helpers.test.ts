@@ -56,6 +56,24 @@ test("pre-spotify link detector requires an explicit link request", async () => 
   assert.equal(wantsSpotifyLink("what can you do before i connect"), false);
 });
 
+test("unsupported service detector answers onboarding support questions only", async () => {
+  const { unsupportedMusicServiceReply } = await import("../src/bot/rotationBot");
+
+  const reply = unsupportedMusicServiceReply("do you support apple music?");
+
+  assert.match(reply ?? "", /not yet/);
+  assert.match(reply ?? "", /spotify is the only one live rn/);
+  assert.match(reply ?? "", /text you when they're ready/);
+  assert.equal(
+    unsupportedMusicServiceReply("i like soundcloud rap"),
+    undefined,
+  );
+  assert.equal(
+    unsupportedMusicServiceReply("can i use yt music instead"),
+    reply,
+  );
+});
+
 test("tapback feedback maps only actionable reactions to replies", async () => {
   const { tapbackFeedbackReply } = await import("../src/bot/rotationBot");
 

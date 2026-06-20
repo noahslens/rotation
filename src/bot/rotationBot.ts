@@ -290,6 +290,26 @@ const removeInlineUrls = (message: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const removePlaylistDeliveryHints = (message: string) => {
+  const cleaned = message
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => {
+      const clean = sentence.toLowerCase();
+      return !(
+        /\b(check|look|find|waiting|wait|refresh|pull down)\b.{0,40}\b(library|spotify|second|ready)\b/.test(
+          clean,
+        ) ||
+        /\b(top of (your )?(spotify )?library|in a second|link is attached|preview)\b/.test(
+          clean,
+        )
+      );
+    })
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || message;
+};
+
 export const normalizeReaction = (reaction?: string | null) => {
   if (!reaction) return undefined;
   const trimmed = reaction.trim();
@@ -331,8 +351,9 @@ export const formatPlaylistReadyReply = (
   avoidReaction?: string | null,
 ) => {
   const withoutUrls = removeInlineUrls(reply) || fallback;
+  const withoutDeliveryHints = removePlaylistDeliveryHints(withoutUrls);
   const withoutDuplicateReaction = removeDuplicateReactionEmoji(
-    withoutUrls,
+    withoutDeliveryHints,
     normalizeReaction(avoidReaction),
   );
   return withoutDuplicateReaction || fallback;
@@ -619,6 +640,55 @@ export const playlistWorkingReaction = (
     return "🎧";
   }
   return "🎧";
+};
+
+export const directPlaylistRequest = (text: string):
+  | {
+      intent:
+        | "discovery"
+        | "activity_playlist"
+        | "more_like_playlist"
+        | "more_like_artist"
+        | "taste_expansion";
+      confidence: number;
+      shortReason: string;
+      auxiliaryReaction?: string | null;
+    }
+  | null => {
+  const clean = normalize(text);
+  if (!clean) return null;
+  if (
+    /\b(price|cost|billing|subscription|subscribe|cancel|portal|refund)\b/.test(clean)
+  ) {
+    return null;
+  }
+
+  const discovery =
+    /\b(more stuff id fw|songs id fw|put me on|new songs|fresh songs|discover|discovery)\b/.test(
+      clean,
+    ) || /\bmore stuff\b.{0,12}\bfw\b/.test(clean);
+  if (discovery) {
+    return {
+      intent: "discovery",
+      confidence: 0.95,
+      shortReason: "explicit discovery playlist request",
+      auxiliaryReaction: playlistWorkingReaction(text, "discovery"),
+    };
+  }
+
+  const creationVerb =
+    /\b(make|create|build|give|send|queue|cook|generate|need|want)\b/.test(clean);
+  const playlistNoun = /\b(playlist|mix|rotation)\b/.test(clean);
+  if (creationVerb && playlistNoun) {
+    return {
+      intent: "activity_playlist",
+      confidence: 0.95,
+      shortReason: "explicit playlist creation request",
+      auxiliaryReaction: playlistWorkingReaction(text, "activity_playlist"),
+    };
+  }
+
+  return null;
 };
 
 export const explicitOpenerQuery = (prompt: string) => {
@@ -1511,11 +1581,14 @@ export class RotationBot {
       return;
     }
 
-    const intent = await this.ai.classify({
-      message: text,
-      conversationHistory,
-    });
-    if (intent.intent === "help") {
+    const directIntent = directPlaylistRequest(text);
+    const intent =
+      directIntent ??
+      (await this.ai.classify({
+        message: text,
+        conversationHistory,
+      }));
+    if (!directIntent && intent.intent === "help") {
       const action = await this.ai
         .textingAction({
           kind: "help",
@@ -1534,7 +1607,7 @@ export class RotationBot {
       return;
     }
 
-    if (intent.intent === "billing") {
+    if (!directIntent && intent.intent === "billing") {
       await this.withTyping(space, async () => {
         if (user.stripeCustomerId || hasActiveSubscription(user)) {
           await sendLogged(space, user._id, await billingPortalText(user));
@@ -1545,7 +1618,7 @@ export class RotationBot {
       return;
     }
 
-    if (intent.intent === "smalltalk" && intent.confidence > 0.78) {
+    if (!directIntent && intent.intent === "smalltalk" && intent.confidence > 0.78) {
       const fallbackMessage =
         "i'm here. send me a mood, activity, or artist and i'll make the playlist.";
       const action = await this.ai
@@ -1971,12 +2044,12 @@ export class RotationBot {
       });
 
       const summary = preserveUrlsLowercase(plan.userFacingSummary);
+      await this.sendPlaylistLink(space, user, updatedTarget.url);
       await sendLogged(
         space,
         user._id,
         summary ? `updated ${updatedTarget.name}. ${summary}` : `updated ${updatedTarget.name}.`,
       );
-      await this.sendPlaylistLink(space, user, updatedTarget.url);
     } catch (caught) {
       await convex.mutation(api.conversation.failRequest, {
         requestId,
@@ -2276,8 +2349,8 @@ export class RotationBot {
         (latestUser ? hasActiveSubscription(latestUser) : false);
 
       if (canDeliverNow) {
-        await sendLogged(space, user._id, reply);
         await this.sendPlaylistLink(space, user, playlist.url);
+        await sendLogged(space, user._id, reply);
         if (args.deferDeliveryUntilPaid) {
           await convex.mutation(api.conversation.markRequestDelivered, {
             requestId,

@@ -265,7 +265,8 @@ export class RotationAi {
       system: `${styleGuide}
 
 ${conversationRules}
-${deliveryFacts}`,
+${deliveryFacts}
+if kind is playlist_ready, do not tell the user to check spotify, check their library, wait a second, or look at the top of their library. the app sends the playlist link separately.`,
       prompt: `classify this inbound text for a spotify playlist texting bot.
 
 also choose an optional auxiliary reaction for the user's message when it adds texture while rotation works.

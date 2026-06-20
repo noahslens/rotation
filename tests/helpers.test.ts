@@ -122,6 +122,20 @@ test("playlist edit detector handles edits without stealing more-like requests",
   );
 });
 
+test("direct playlist request detector catches explicit playlist creation", async () => {
+  const { directPlaylistRequest } = await import("../src/bot/rotationBot");
+
+  assert.equal(
+    directPlaylistRequest("Make me a going out playlist for pregames")?.intent,
+    "activity_playlist",
+  );
+  assert.equal(
+    directPlaylistRequest("more stuff i'd fw")?.intent,
+    "discovery",
+  );
+  assert.equal(directPlaylistRequest("how much does rotation cost"), null);
+});
+
 test("playlist auto delete parser handles short and long durations", async () => {
   const { playlistAutoDeleteRequest } = await import("../src/bot/rotationBot");
   const now = Date.UTC(2026, 5, 20);
@@ -388,6 +402,13 @@ test("playlist ready formatter removes inline links and repeated reaction emoji"
       "fire",
     ),
     "made pool party",
+  );
+  assert.equal(
+    formatPlaylistReadyReply(
+      "on it. built the warmup. check the top of your library in a second.",
+      "made the warmup",
+    ),
+    "on it. built the warmup.",
   );
 });
 

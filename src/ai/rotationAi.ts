@@ -228,6 +228,29 @@ const contextForModel = (context: MusicContext) => {
       playlistContentsById.set(playlistId, tracks);
     }
   }
+  const nestedPlaylistTrackIds = new Set<string>();
+  const ownedPlaylists = context.playlists.flatMap((playlist) => {
+    const isUserOwned = Boolean(
+      context.user?.spotifyUserId && playlist.ownerId === context.user.spotifyUserId,
+    );
+    if (!isUserOwned) return [];
+    const tracks = playlistContentsById.get(playlist.spotifyPlaylistId) ?? [];
+    if (tracks.length === 0) return [];
+    for (const track of tracks) nestedPlaylistTrackIds.add(track.spotifyTrackId);
+    return [
+      {
+        id: playlist.spotifyPlaylistId,
+        name: playlist.name,
+        description: playlist.description,
+        ownerId: playlist.ownerId,
+        ownerName: playlist.ownerName,
+        isUserOwned,
+        trackCount: playlist.trackCount,
+        storedTrackCount: tracks.length,
+        tracks: tracks.sort(byWeight).map(compactTrack),
+      },
+    ];
+  });
 
   return {
     user: {
@@ -246,30 +269,13 @@ const contextForModel = (context: MusicContext) => {
       playlistCount: context.playlists.length,
       playlistsWithTrackContentsCount: playlistContentsById.size,
     },
-    playlists: context.playlists.flatMap((playlist) => {
-      const isUserOwned = Boolean(
-        context.user?.spotifyUserId && playlist.ownerId === context.user.spotifyUserId,
-      );
-      if (!isUserOwned) return [];
-      const tracks = playlistContentsById.get(playlist.spotifyPlaylistId) ?? [];
-      if (tracks.length === 0) return [];
-      return [
-        {
-          id: playlist.spotifyPlaylistId,
-          name: playlist.name,
-          description: playlist.description,
-          ownerId: playlist.ownerId,
-          ownerName: playlist.ownerName,
-          isUserOwned,
-          trackCount: playlist.trackCount,
-          storedTrackCount: tracks.length,
-          tracks: tracks.sort(byWeight).map(compactTrack),
-        },
-      ];
-    }),
+    playlists: ownedPlaylists,
     savedTracks: savedTracks.sort(byWeight).map(compactTrack),
     topTracks: topTracks.sort(byWeight).map(compactTrack),
-    playlistTracks: playlistTracks.sort(byWeight).map(compactTrack),
+    playlistTracks: playlistTracks
+      .filter((track) => !nestedPlaylistTrackIds.has(track.spotifyTrackId))
+      .sort(byWeight)
+      .map(compactTrack),
     createdTracks: createdTracks.sort(byWeight).map(compactTrack),
   };
 };
@@ -296,7 +302,7 @@ const preserveUrlsLowercase = (text: string) => {
 const playlistGenerationPrompt = (userPrompt: string, payload: unknown) =>
   `user request: ${userPrompt}
 
-${JSON.stringify(payload, null, 2)}
+${JSON.stringify(payload)}
 
 user request: ${userPrompt}`;
 

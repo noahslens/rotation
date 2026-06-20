@@ -11,7 +11,12 @@ const app = await Spectrum({
   options: { logLevel: "info" },
 });
 
-const bot = createRotationBot();
+const imessageProvider = imessage(app);
+const bot = createRotationBot({
+  attachmentFetcher: {
+    getAttachment: (id, phone) => imessageProvider.getAttachment(id, phone),
+  },
+});
 const stopBackgroundJobs = startBackgroundJobs(app, bot);
 
 console.info("[rotation.startup]", {

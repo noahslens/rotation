@@ -66,10 +66,11 @@ const isReactionMessage = (message: Message): message is ReactionMessage =>
 
 type AttachmentContent = {
   type: "attachment";
-  name: string;
+  id?: string;
+  name?: string;
   mimeType: string;
   size?: number;
-  read: () => Promise<Buffer>;
+  read?: () => Promise<Buffer>;
 };
 
 type VoiceContent = {
@@ -98,6 +99,35 @@ type VoiceNote = {
   read: () => Promise<Buffer>;
 };
 
+type AttachmentFetcher = {
+  getAttachment: (id: string, phone?: string) => Promise<AttachmentContent | undefined>;
+};
+
+const isAudioMime = (mimeType: string | undefined) =>
+  Boolean(mimeType?.toLowerCase().startsWith("audio/"));
+
+const phoneFromSpace = (space: Space) => {
+  const phone = (space as { phone?: unknown }).phone;
+  return typeof phone === "string" ? phone : undefined;
+};
+
+const attachmentRead = (
+  content: AttachmentContent,
+  space: Space,
+  attachmentFetcher?: AttachmentFetcher,
+) => async () => {
+  if (typeof content.read === "function") return await content.read();
+  if (!content.id || !attachmentFetcher) {
+    throw new Error("attachment bytes unavailable");
+  }
+
+  const fetched = await attachmentFetcher.getAttachment(content.id, phoneFromSpace(space));
+  if (!fetched?.read) {
+    throw new Error("attachment bytes unavailable");
+  }
+  return await fetched.read();
+};
+
 const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
   const content = message.content;
   if (content.type === "attachment" && isImageMime(content.mimeType)) {
@@ -105,10 +135,14 @@ const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
     return [
       {
         messageId: message.id,
-        name: attachment.name,
+        name: attachment.name ?? "photo",
         mimeType: attachment.mimeType,
         size: attachment.size,
-        read: attachment.read,
+        read:
+          attachment.read ??
+          (async () => {
+            throw new Error("attachment bytes unavailable");
+          }),
       },
     ];
   }
@@ -120,7 +154,11 @@ const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
   return [];
 };
 
-const voiceNotesFromMessage = (message: Message): VoiceNote[] => {
+export const voiceNotesFromMessage = (
+  message: Message,
+  space: Space,
+  attachmentFetcher?: AttachmentFetcher,
+): VoiceNote[] => {
   const content = message.content;
   if (content.type === "voice") {
     const voice = content as VoiceContent;
@@ -136,8 +174,23 @@ const voiceNotesFromMessage = (message: Message): VoiceNote[] => {
     ];
   }
 
+  if (content.type === "attachment" && isAudioMime(content.mimeType)) {
+    const audio = content as AttachmentContent;
+    return [
+      {
+        messageId: message.id,
+        name: audio.name ?? "voice-note",
+        mimeType: audio.mimeType,
+        size: audio.size,
+        read: attachmentRead(audio, space, attachmentFetcher),
+      },
+    ];
+  }
+
   if (content.type === "group") {
-    return content.items.flatMap((item) => voiceNotesFromMessage(item));
+    return content.items.flatMap((item) =>
+      voiceNotesFromMessage(item, space, attachmentFetcher),
+    );
   }
 
   return [];
@@ -510,6 +563,7 @@ export class RotationBot {
   constructor(
     private readonly ai: RotationAi,
     private readonly spotify: SpotifyService,
+    private readonly attachmentFetcher?: AttachmentFetcher,
   ) {}
 
   async handle(space: Space, message: Message) {
@@ -518,7 +572,7 @@ export class RotationBot {
       await this.handleTapback(space, message);
       return;
     }
-    const voiceNotes = voiceNotesFromMessage(message);
+    const voiceNotes = voiceNotesFromMessage(message, space, this.attachmentFetcher);
     if (voiceNotes.length) {
       await this.handleVoiceNote(space, message, voiceNotes);
       return;
@@ -1797,8 +1851,8 @@ export class RotationBot {
   }
 }
 
-export const createRotationBot = () =>
-  new RotationBot(new RotationAi(), new SpotifyService());
+export const createRotationBot = (options?: { attachmentFetcher?: AttachmentFetcher }) =>
+  new RotationBot(new RotationAi(), new SpotifyService(), options?.attachmentFetcher);
 
 export type RotationApp = SpectrumInstance;
 

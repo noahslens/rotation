@@ -67,6 +67,57 @@ test("playlist link resend detector avoids spotify auth links", async () => {
   assert.equal(wantsPlaylistLinkResend("make another pool party playlist"), false);
 });
 
+test("voice note detector handles inbound audio attachments", async () => {
+  const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
+  const message = {
+    id: "message_1",
+    content: {
+      type: "attachment",
+      id: "attachment_1",
+      name: "voice.m4a",
+      mimeType: "audio/mp4",
+      size: 123,
+    },
+  };
+  const space = { phone: "+15555550123" };
+  const notes = voiceNotesFromMessage(message as never, space as never, {
+    getAttachment: async (id, phone) => {
+      assert.equal(id, "attachment_1");
+      assert.equal(phone, "+15555550123");
+      return {
+        type: "attachment",
+        id,
+        name: "voice.m4a",
+        mimeType: "audio/mp4",
+        read: async () => Buffer.from("audio bytes"),
+      };
+    },
+  });
+
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0]?.mimeType, "audio/mp4");
+  assert.deepEqual(await notes[0]?.read(), Buffer.from("audio bytes"));
+});
+
+test("voice note detector ignores non-audio attachments", async () => {
+  const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
+
+  const notes = voiceNotesFromMessage(
+    {
+      id: "message_1",
+      content: {
+        type: "attachment",
+        id: "attachment_1",
+        name: "photo.jpg",
+        mimeType: "image/jpeg",
+      },
+    } as never,
+    {} as never,
+  );
+
+  assert.equal(notes.length, 0);
+});
+
 test("unsupported service detector answers onboarding support questions only", async () => {
   const { unsupportedMusicServiceReply } = await import("../src/bot/rotationBot");
 

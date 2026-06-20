@@ -45,6 +45,12 @@ test("paywall text includes stripe test card dev note", async () => {
   assert.match(text, /ready by the time you're done/);
 });
 
+test("spotify auth requests playlist cover upload permission", async () => {
+  const { spotifyScopes } = await import("../src/services/spotify");
+
+  assert.equal(spotifyScopes.includes("ugc-image-upload"), true);
+});
+
 test("pre-spotify link detector requires an explicit link request", async () => {
   const { wantsSpotifyLink } = await import("../src/bot/rotationBot");
 

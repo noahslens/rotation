@@ -884,13 +884,14 @@ export class RotationBot {
       now,
     });
 
-    try {
-      await message.read().catch((caught) => {
-        console.warn("[rotation.photo_read_failed]", compactError(caught));
-      });
+    await message.read().catch((caught) => {
+      console.warn("[rotation.photo_read_failed]", compactError(caught));
+    });
 
-      let savedCount = 0;
-      for (const photo of photoAttachments) {
+    let savedCount = 0;
+    const failures: string[] = [];
+    for (const photo of photoAttachments) {
+      try {
         const bytes = await photo.read();
         await saveUserPhoto({
           userId: user._id,
@@ -901,29 +902,44 @@ export class RotationBot {
           sourceMessageId: photo.messageId ?? message.id,
         });
         savedCount += 1;
+      } catch (caught) {
+        const error = compactError(caught);
+        failures.push(error);
+        console.warn("[rotation.photo_upload_item_failed]", {
+          messageId: message.id,
+          name: photo.name,
+          error,
+        });
       }
+    }
 
-      const reply =
-        savedCount === 1
-          ? "saved it. totally optional, but i'll use favorite photos as playlist covers when they fit. you can send photos anytime."
-          : `saved ${savedCount}. totally optional, but i'll use favorite photos as playlist covers when they fit. you can send photos anytime.`;
-      await this.withTyping(space, async () => {
-        await sendLogged(space, user._id, reply);
-      });
-    } catch (caught) {
+    if (failures.length) {
       await this.recordFailure(
         "photo_upload",
         user._id,
-        { messageId: message.id, count: photoAttachments.length },
-        caught,
-      );
-      console.error("[rotation.photo_upload_failed]", caught);
-      await sendLogged(
-        space,
-        user._id,
-        "couldn't save that photo. try sending it again in a sec.",
+        {
+          messageId: message.id,
+          count: photoAttachments.length,
+          savedCount,
+          failures,
+        },
+        failures.join("; "),
       );
     }
+
+    const reply =
+      savedCount === photoAttachments.length
+        ? savedCount === 1
+          ? "saved it."
+          : `saved ${savedCount}.`
+        : savedCount > 0
+          ? `saved ${savedCount}. ${failures.length} didn't come through.`
+          : photoAttachments.length === 1
+            ? "couldn't save that one. try sending it again in a sec."
+            : "couldn't save those. try sending them again in a sec.";
+    await this.withTyping(space, async () => {
+      await sendLogged(space, user._id, reply);
+    });
   }
 
   private async tapback(
@@ -1719,7 +1735,15 @@ export class RotationBot {
       })),
     });
 
-    if (!selection.selectedPhotoId || selection.confidence < 0.35) return null;
+    console.info("[rotation.cover_selection]", {
+      userId,
+      selectedPhotoId: selection.selectedPhotoId,
+      confidence: selection.confidence,
+      reason: selection.reason,
+      candidateCount: candidates.length,
+    });
+
+    if (!selection.selectedPhotoId || selection.confidence < 0.2) return null;
     const selected = candidates.find(
       (candidate) => candidate.id === selection.selectedPhotoId,
     );

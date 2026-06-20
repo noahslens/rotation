@@ -1,8 +1,14 @@
-import sharp from "sharp";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import sharp, { type Sharp } from "sharp";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { api, convex } from "../state/convex";
 
 const spotifyCoverMaxBytes = 256 * 1024;
+const execFileAsync = promisify(execFile);
 
 export type SavedUserPhoto = Doc<"userPhotos"> & {
   url: string | null;
@@ -23,6 +29,58 @@ export const isImageMime = (mimeType: string | undefined) =>
 
 const safePhotoName = (name: string | undefined, fallback = "photo") =>
   (name?.trim() || fallback).slice(0, 120);
+
+const userPhotoSharp = (bytes: Buffer) =>
+  sharp(bytes, {
+    limitInputPixels: 100_000_000,
+    unlimited: true,
+  });
+
+const convertWithSips = async (bytes: Buffer) => {
+  const dir = await mkdtemp(join(tmpdir(), "rotation-photo-"));
+  const inputPath = join(dir, "input.heic");
+  const outputPath = join(dir, "output.jpg");
+  try {
+    await writeFile(inputPath, bytes);
+    await execFileAsync("sips", ["-s", "format", "jpeg", inputPath, "--out", outputPath], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return await readFile(outputPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+};
+
+const withUserPhotoFallback = async (
+  bytes: Buffer,
+  render: (image: Sharp) => Promise<Buffer>,
+) => {
+  try {
+    return await render(userPhotoSharp(bytes));
+  } catch (caught) {
+    if (process.platform !== "darwin") throw caught;
+    const jpegBytes = await convertWithSips(bytes);
+    return await render(sharp(jpegBytes));
+  }
+};
+
+const normalizedUserPhoto = async (bytes: Buffer) => {
+  try {
+    await userPhotoSharp(bytes)
+      .rotate()
+      .resize(16, 16, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 60 })
+      .toBuffer();
+    return { bytes, usePlainSharp: false };
+  } catch (caught) {
+    if (process.platform !== "darwin") throw caught;
+    return { bytes: await convertWithSips(bytes), usePlainSharp: true };
+  }
+};
+
+const normalizedSharp = (input: { bytes: Buffer; usePlainSharp: boolean }) =>
+  input.usePlainSharp ? sharp(input.bytes) : userPhotoSharp(input.bytes);
 
 export const saveUserPhoto = async (input: {
   userId: Id<"users">;
@@ -70,16 +128,19 @@ export const fetchPhotoBytes = async (photo: SavedUserPhoto) => {
 };
 
 export const modelPhotoJpeg = async (bytes: Buffer) =>
-  await sharp(bytes)
-    .rotate()
-    .resize(512, 512, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 82, mozjpeg: true })
-    .toBuffer();
+  await withUserPhotoFallback(bytes, async (image) =>
+    await image
+      .rotate()
+      .resize(512, 512, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 82, mozjpeg: true })
+      .toBuffer(),
+  );
 
 export const spotifyCoverJpeg = async (bytes: Buffer) => {
+  const input = await normalizedUserPhoto(bytes);
   for (const size of [640, 512, 384, 300]) {
     for (const quality of [88, 80, 72, 64, 56, 48]) {
-      const output = await sharp(bytes)
+      const output = await normalizedSharp(input)
         .rotate()
         .resize(size, size, { fit: "cover" })
         .jpeg({ quality, mozjpeg: true })

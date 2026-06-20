@@ -61,6 +61,14 @@ const deliveryFacts = [
   "if a playlist link or preview does not show up, the user can ask rotation to resend it.",
 ].join("\n");
 
+const playlistNamingRules = [
+  "playlist names should be about 20 percent less corny than your first instinct.",
+  "prefer simple, understated, natural names, usually 1 to 4 words.",
+  "stay close to the user's wording when it is already good, like happy, pool party, morning run, or lock in.",
+  "avoid puns, therapy-speak, main-character language, hype-beast phrasing, and names like sunny disposition, serotonin, golden hour glow, immaculate vibes, or anything with an emoji.",
+  "descriptions and user-facing summaries should also be casual and specific, not overwritten.",
+].join("\n");
+
 const intentSchema = z.object({
   intent: z.enum([
     "help",
@@ -287,6 +295,7 @@ the musicContext contains full stored song history by source: liked songs in sav
 each track can include sources, playlistCount, and tasteWeight. tasteWeight is computed in convex from liked status, spotify top-track presence, and number of user-owned playlists containing the track.
 ${playlistJudgmentRules}
 ${conversationRules}
+${playlistNamingRules}
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
 do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
@@ -540,6 +549,7 @@ if spotify is not connected and they ask whether apple music, soundcloud, youtub
 if spotify is connected, use the full music context the same way playlistPlan uses it for typed prompts.
 ${playlistJudgmentRules}
 ${conversationRules}
+${playlistNamingRules}
 for playlistPlan rules, follow the same rules as typed playlist planning: dynamic counts for user requests, fixed counts only when countMode is fixed, new-music requests should exclude known liked/saved songs, and activity playlists may blend familiar anchors with fitting discovery.`,
       messages: [
         {
@@ -613,9 +623,11 @@ request: ${args.userPrompt}
 summary: ${args.userFacingSummary}
 
 rules:
-- select one photo only if it clearly fits the playlist mood, activity, scene, or energy.
+- prefer selecting a saved photo when one plausibly fits the playlist mood, activity, scene, or energy.
+- broad moods count: for happy, upbeat, summer, party, chill, sad, focus, or romantic playlists, choose the photo whose visual feeling best matches the mood.
 - prefer personal-feeling photos over generic ones when both fit.
-- if none fit, return selectedPhotoId as null.
+- for happy/upbeat playlists, bright, colorful, sunny, smiling, social, water, travel, outdoor, or playful photos are good fits.
+- return selectedPhotoId as null only when every photo would feel actively wrong or distracting as the cover.
 - respond only through the schema.
 
 photos are provided below, each preceded by its id.`,

@@ -117,6 +117,16 @@ export const getAuthState = query({
   },
 });
 
+export const getAuthStateForCallback = query({
+  args: { state: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("spotifyAuthStates")
+      .withIndex("by_state", (q) => q.eq("state", args.state))
+      .unique();
+  },
+});
+
 export const markAuthStateConsumed = mutation({
   args: { authStateId: v.id("spotifyAuthStates"), now: v.number() },
   handler: async (ctx, args) => {
@@ -128,6 +138,20 @@ export const markAuthStateConsumed = mutation({
 
     await ctx.db.patch(args.authStateId, { consumedAt: args.now });
     return record;
+  },
+});
+
+export const markLinkedWithoutProfile = mutation({
+  args: {
+    userId: v.id("users"),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      spotifyLinked: true,
+      onboardingStage: "linked",
+      updatedAt: args.now,
+    });
   },
 });
 

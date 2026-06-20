@@ -2898,12 +2898,16 @@ export class RotationBot {
   private async freshMusicContext(user: Doc<"users">) {
     const userId = user._id;
     let context = await this.fullMusicContext(userId);
+    let spotifyUserId = context.user?.spotifyUserId ?? user.spotifyUserId;
+    if (user.spotifyLinked && !spotifyUserId) {
+      spotifyUserId = await this.refreshSpotifyProfile(userId);
+    }
     if (!hasFreshSync(context.user, context)) {
       console.info("[rotation.context] syncing spotify library", {
         userId,
         existingTracks: context.tracks.length,
       });
-      await this.spotify.syncUserLibrary(userId, user.spotifyUserId);
+      await this.spotify.syncUserLibrary(userId, spotifyUserId);
       context = await this.fullMusicContext(userId);
       console.info("[rotation.context] spotify sync loaded", {
         userId,
@@ -2920,6 +2924,27 @@ export class RotationBot {
     }
 
     return context;
+  }
+
+  private async refreshSpotifyProfile(userId: Id<"users">) {
+    try {
+      const profile = await this.spotify.currentUserProfile(userId);
+      await convex.mutation(api.spotify.saveProfile, {
+        userId,
+        spotifyUserId: profile.id,
+        spotifyDisplayName: profile.display_name,
+        spotifyEmail: profile.email,
+        defaultMarket: profile.country,
+        now: Date.now(),
+      });
+      return profile.id;
+    } catch (caught) {
+      console.warn("[rotation.context] spotify profile refresh failed", {
+        userId,
+        error: compactError(caught),
+      });
+      return undefined;
+    }
   }
 
   private async updateTasteSummary(userId: Id<"users">, context: MusicContext) {

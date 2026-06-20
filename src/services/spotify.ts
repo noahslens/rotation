@@ -92,6 +92,13 @@ type SpotifyPlaylist = {
   uri?: string;
 };
 
+export type SpotifyProfile = {
+  id: string;
+  display_name?: string;
+  email?: string;
+  country?: string;
+};
+
 type Page<T> = {
   items: T[];
   next: string | null;
@@ -301,6 +308,10 @@ export class SpotifyService {
       savedTracks: savedTracks.length,
       playlistTracks: playlistTracks.length,
     };
+  }
+
+  async currentUserProfile(userId: Id<"users">) {
+    return await this.request<SpotifyProfile>(userId, "/me");
   }
 
   async searchTracks(

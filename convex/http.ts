@@ -30,6 +30,11 @@ const html = (body: string, status = 200) =>
     },
   );
 
+const spotifyLinkedHtml = () =>
+  html(
+    "<h1>spotify linked</h1><p>you’re good. head back to messages and rotation will make your first playlist.</p>",
+  );
+
 const requiredEnv = (name: string) => {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
@@ -337,11 +342,20 @@ const spotifyCallback = httpAction(async (ctx, request) => {
   let userIdForFailure: Id<"users"> | undefined;
 
   try {
-    const authState = await ctx.runQuery(api.spotify.getAuthState, {
+    const authState = await ctx.runQuery(api.spotify.getAuthStateForCallback, {
       state,
-      now,
     });
+    if (!authState || authState.expiresAt < now) {
+      throw new Error("invalid or expired spotify auth state");
+    }
     userIdForFailure = authState.userId;
+    if (authState.consumedAt) {
+      const user = await ctx.runQuery(api.users.getById, {
+        userId: authState.userId,
+      });
+      if (user?.spotifyLinked) return spotifyLinkedHtml();
+      throw new Error("invalid or expired spotify auth state");
+    }
 
     const token = await spotifyTokenRequest(
       new URLSearchParams({
@@ -355,7 +369,6 @@ const spotifyCallback = httpAction(async (ctx, request) => {
       throw new Error("spotify did not return a refresh token");
     }
 
-    const profile = await spotifyProfile(token.access_token);
     await ctx.runMutation(api.spotify.saveTokens, {
       userId: authState.userId,
       accessTokenCiphertext: await encrypt(token.access_token),
@@ -365,22 +378,42 @@ const spotifyCallback = httpAction(async (ctx, request) => {
       tokenType: token.token_type,
       now,
     });
-    await ctx.runMutation(api.spotify.saveProfile, {
-      userId: authState.userId,
-      spotifyUserId: profile.id,
-      spotifyDisplayName: profile.display_name,
-      spotifyEmail: profile.email,
-      defaultMarket: profile.country,
-      now,
-    });
     await ctx.runMutation(api.spotify.markAuthStateConsumed, {
       authStateId: authState._id,
       now,
     });
 
-    return html(
-      "<h1>spotify linked</h1><p>you’re good. head back to messages and rotation will make your first playlist.</p>",
-    );
+    try {
+      const profile = await spotifyProfile(token.access_token);
+      await ctx.runMutation(api.spotify.saveProfile, {
+        userId: authState.userId,
+        spotifyUserId: profile.id,
+        spotifyDisplayName: profile.display_name,
+        spotifyEmail: profile.email,
+        defaultMarket: profile.country,
+        now,
+      });
+    } catch (profileError) {
+      const canFinishWithoutProfile =
+        profileError instanceof SpotifyApiError &&
+        (profileError.status === 429 ||
+          [500, 502, 503, 504].includes(profileError.status));
+      if (!canFinishWithoutProfile) throw profileError;
+      await ctx.runMutation(api.spotify.markLinkedWithoutProfile, {
+        userId: authState.userId,
+        now,
+      });
+      await ctx.runMutation(api.conversation.recordJobFailure, {
+        job: "spotify_profile_after_link",
+        userId: authState.userId,
+        payloadJson: JSON.stringify({ state }),
+        error:
+          profileError instanceof Error ? profileError.message : String(profileError),
+        now,
+      });
+    }
+
+    return spotifyLinkedHtml();
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
     await ctx.runMutation(api.conversation.recordJobFailure, {

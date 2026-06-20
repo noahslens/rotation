@@ -215,15 +215,12 @@ export class SpotifyService {
       isPublic?: boolean;
     },
   ): Promise<CreatedPlaylist> {
-    const spotifyUserId = user.spotifyUserId;
-    if (!spotifyUserId) throw new Error("spotify profile is missing");
-
     const playlist = await this.request<{
       id: string;
       name: string;
       uri: string;
       external_urls?: SpotifyExternalUrls;
-    }>(user._id, `/users/${spotifyUserId}/playlists`, {
+    }>(user._id, "/me/playlists", {
       method: "POST",
       body: JSON.stringify({
         name: input.name.slice(0, 100),

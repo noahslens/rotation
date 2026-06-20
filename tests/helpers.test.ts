@@ -73,6 +73,27 @@ test("playlist link resend detector avoids spotify auth links", async () => {
   assert.equal(wantsPlaylistLinkResend("make another pool party playlist"), false);
 });
 
+test("playlist edit detector handles edits without stealing more-like requests", async () => {
+  const { playlistEditIntent, spotifyPlaylistIdFromText } = await import("../src/bot/rotationBot");
+
+  assert.equal(playlistEditIntent("add more future to it"), true);
+  assert.equal(playlistEditIntent("add 10 more songs to that playlist"), true);
+  assert.equal(playlistEditIntent("remove skyfall from that playlist"), true);
+  assert.equal(playlistEditIntent("make it more upbeat"), true);
+  assert.equal(
+    playlistEditIntent("give me more songs like my summer playlist"),
+    false,
+  );
+  assert.equal(
+    playlistEditIntent("give me more songs like https://open.spotify.com/playlist/abc123"),
+    false,
+  );
+  assert.equal(
+    spotifyPlaylistIdFromText("https://open.spotify.com/playlist/abc123?si=xyz"),
+    "abc123",
+  );
+});
+
 test("voice note detector handles inbound audio attachments", async () => {
   const { voiceNotesFromMessage } = await import("../src/bot/rotationBot");
   const message = {
@@ -178,7 +199,7 @@ test("texting action formatter supports reaction only, message only, and both", 
       reaction: "fire",
       message: "CHECK THIS https://Example.com/ABC",
     }),
-    { reaction: "🔥", message: "check this https://Example.com/ABC" },
+    { reaction: undefined, message: "check this https://Example.com/ABC" },
   );
   assert.deepEqual(
     formatTextingAction({
@@ -186,7 +207,7 @@ test("texting action formatter supports reaction only, message only, and both", 
       reaction: "fire",
       message: "🔥 checking now",
     }),
-    { reaction: "🔥", message: "checking now" },
+    { reaction: undefined, message: "🔥 checking now" },
   );
   assert.deepEqual(
     formatTextingAction({

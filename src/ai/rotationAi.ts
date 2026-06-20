@@ -100,6 +100,20 @@ const playlistPlanSchema = z.object({
   userFacingSummary: z.string().min(1).max(320),
 });
 
+const playlistEditPlanSchema = z.object({
+  action: z.enum(["add_tracks", "remove_tracks", "replace_tracks", "mixed_update", "rename"]),
+  needsPoll: z.boolean(),
+  pollQuestion: z.string().max(120).optional(),
+  pollOptions: z.array(z.string().max(40)).min(2).max(4).optional(),
+  playlistName: z.string().min(1).max(80).nullable().optional(),
+  playlistDescription: z.string().min(1).max(240).nullable().optional(),
+  targetCount: z.number().int().min(0).max(200),
+  searchQueries: z.array(z.string().min(2).max(120)).max(40),
+  keepTrackIds: z.array(z.string()).max(200),
+  removeTrackIds: z.array(z.string()).max(200),
+  userFacingSummary: z.string().min(1).max(320),
+});
+
 const selectedTracksSchema = z.object({
   selectedTrackIds: z.array(z.string()).min(1).max(200),
   reason: z.string().max(1000),
@@ -440,7 +454,7 @@ ${conversationRules}
 ${deliveryFacts}
 you can send just a tapback/reaction, just a text message, both, or nothing.
 use reaction_only for thanks, compliments, agreement, laughter, or low-information nice messages that do not require a real reply.
-use message_only for questions, instructions, or anything needing content. you may still include a reaction with message_only when it adds texture.
+use message_only for questions, instructions, or anything needing content, with no reaction.
 use both when a quick reaction plus a short useful reply feels natural.
 reaction can be a single emoji or a tapback word like love, like, laugh, emphasize, question.
 when including a reaction and a message, do not put the same emoji in the message.
@@ -470,6 +484,52 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
         ? preserveUrlsLowercase(result.object.message.trim())
         : result.object.message,
     };
+  }
+
+  async playlistEditPlan(args: {
+    prompt: string;
+    context: MusicContext;
+    targetPlaylist: {
+      id: string;
+      name: string;
+      description?: string;
+      trackCount: number;
+    };
+    currentTracks: RotationTrack[];
+    conversationHistory?: ConversationTurn[];
+  }) {
+    const result = await generateObject({
+      model: model(),
+      schema: playlistEditPlanSchema,
+      providerOptions,
+      system: `${styleGuide}
+
+you edit an existing spotify playlist. do not create a new playlist.
+${playlistJudgmentRules}
+${conversationRules}
+${playlistNamingRules}
+choose the smallest useful edit that satisfies the user.
+if they ask to add songs or make it longer, use action add_tracks and targetCount is the number of tracks to add. obey explicit counts; otherwise add 8-20 tracks. adding does not require removing anything.
+if they ask to remove songs, use action remove_tracks and list current track ids to remove.
+if they ask to remove some songs and add others in the same request, use action mixed_update. list removeTrackIds and search queries for what to add. targetCount is the number of tracks to add.
+if they ask to make it more/less like a vibe or ask for a final playlist length, replace weak tracks while preserving existing tracks that still fit. use action replace_tracks and targetCount is the final playlist length.
+if they ask only to rename or change description, use action rename.
+use currentTracks ids exactly for keepTrackIds and removeTrackIds.
+do not remove repeated versions of the same song just because titles match. only remove duplicates if the user asks to dedupe or remove repeats.
+if the edit request is ambiguous enough that you cannot safely act, ask a short poll.`,
+      prompt: JSON.stringify(
+        {
+          userPrompt: args.prompt,
+          targetPlaylist: args.targetPlaylist,
+          currentTracks: args.currentTracks.slice(0, 220).map(compactTrack),
+          recentConversation: conversationForModel(args.conversationHistory),
+          musicContext: contextForModel(args.context),
+        },
+        null,
+        2,
+      ),
+    });
+    return result.object;
   }
 
   async preSpotifyReply(

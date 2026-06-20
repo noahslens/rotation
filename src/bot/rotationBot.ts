@@ -24,6 +24,7 @@ import {
 } from "../services/photos";
 import {
   type CandidateTrack,
+  type EditablePlaylist,
   type RotationTrack,
   SpotifyService,
 } from "../services/spotify";
@@ -305,7 +306,10 @@ export const formatTextingAction = (
   action: TextingAction,
   fallbackMessage?: string,
 ): { reaction?: string; message?: string } => {
-  const reaction = action.mode === "none" ? undefined : normalizeReaction(action.reaction);
+  const reaction =
+    action.mode === "reaction_only" || action.mode === "both"
+      ? normalizeReaction(action.reaction)
+      : undefined;
   const rawMessage =
     action.mode === "reaction_only" || action.mode === "none"
       ? undefined
@@ -389,6 +393,53 @@ const normalize = (value: string) =>
     .replace(/[^\p{L}\p{N}\s]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
+
+export const spotifyPlaylistIdFromText = (text: string) => {
+  const match =
+    text.match(/open\.spotify\.com\/playlist\/([A-Za-z0-9]+)/i) ??
+    text.match(/spotify:playlist:([A-Za-z0-9]+)/i);
+  return match?.[1];
+};
+
+const quotedPlaylistName = (text: string) => {
+  const match =
+    text.match(/["“”']([^"“”']{2,80})["“”']/) ??
+    text.match(/\b(?:playlist|called|named)\s+([a-z0-9][a-z0-9\s'.&-]{1,80})/i);
+  return match?.[1]?.trim();
+};
+
+export const playlistEditIntent = (text: string) => {
+  const clean = normalize(text);
+  if (!clean) return false;
+  const makePlaylistEdit = /\bmake (it|that|this|the playlist|this playlist|that playlist)\b/.test(
+    clean,
+  );
+  const mutatingVerb =
+    /\b(tweak|edit|change|adjust|update|rename|add|remove|delete|replace|swap|move|reorder|shorten|extend)\b/.test(
+      clean,
+    );
+  const moreLikeRequest =
+    /\b(more|songs|stuff|music|playlist)\b.{0,32}\blike\b/.test(clean) ||
+    /\blike\b.{0,48}\b(this|that|it|playlist|link|one)\b/.test(clean);
+  if (moreLikeRequest && !mutatingVerb && !makePlaylistEdit) {
+    return false;
+  }
+  if (spotifyPlaylistIdFromText(text)) return true;
+
+  const editVerb =
+    mutatingVerb ||
+    /\b(make shorter|make longer)\b/.test(clean) ||
+    /\bmake (it|that|this|the playlist|this playlist|that playlist)\b.{0,24}\b(more|less)\b/.test(
+      clean,
+    );
+  if (!editVerb) return false;
+
+  const directPlaylistRef =
+    /\b(playlist|mix|rotation)\b/.test(clean) ||
+    /\b(it|that|this|that one|this one|the one|same one)\b/.test(clean);
+  const makeIt = /\bmake (it|that|this|the playlist)\b/.test(clean);
+  return directPlaylistRef || makeIt;
+};
 
 export const explicitOpenerQuery = (prompt: string) => {
   const compact = prompt.replace(/\s+/g, " ").trim();
@@ -1232,6 +1283,13 @@ export class RotationBot {
       return;
     }
 
+    if (playlistEditIntent(text)) {
+      await this.withTyping(space, async () => {
+        await this.editExistingPlaylist(space, user, text, sourceMessage, conversationHistory);
+      });
+      return;
+    }
+
     const pollAnswerHandled = await this.maybeHandlePollAnswer(
       space,
       user,
@@ -1460,6 +1518,277 @@ export class RotationBot {
       });
     });
     return true;
+  }
+
+  private async editExistingPlaylist(
+    space: Space,
+    user: Doc<"users">,
+    text: string,
+    sourceMessage: Message,
+    conversationHistory: ConversationTurn[],
+  ) {
+    const shouldGateForPayment =
+      Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
+    if (shouldGateForPayment) {
+      await sendLogged(space, user._id, paywallText(user._id, { buildingPlaylist: true }));
+      await convex.mutation(api.users.markPaywallShown, {
+        userId: user._id,
+        now: Date.now(),
+      });
+      return;
+    }
+
+    const context = await this.freshMusicContext(user);
+    const target = await this.resolveEditablePlaylist(user, text, context);
+    if (!target) {
+      await sendLogged(space, user._id, "which playlist should i tweak? send the name or link.");
+      return;
+    }
+
+    const requestId = await convex.mutation(api.conversation.createRequest, {
+      userId: user._id,
+      prompt: text,
+      intent: "playlist_edit",
+      deliveryMode: "immediate",
+      now: Date.now(),
+    });
+
+    try {
+      const currentTracks = await this.spotify.getPlaylistTracks(user._id, target.id);
+      const targetWithCount = {
+        ...target,
+        trackCount: currentTracks.length || target.trackCount,
+      };
+      const plan = await this.ai.playlistEditPlan({
+        prompt: text,
+        context,
+        targetPlaylist: {
+          id: targetWithCount.id,
+          name: targetWithCount.name,
+          description: targetWithCount.description,
+          trackCount: targetWithCount.trackCount,
+        },
+        currentTracks,
+        conversationHistory,
+      });
+
+      if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length) {
+        await sendLogged(
+          space,
+          user._id,
+          `${plan.pollQuestion} ${plan.pollOptions.join(" / ")}`,
+        );
+        await convex.mutation(api.conversation.failRequest, {
+          requestId,
+          error: "playlist edit needs clarification",
+          now: Date.now(),
+        });
+        return;
+      }
+
+      let updatedTarget = targetWithCount;
+      if (plan.playlistName || plan.playlistDescription !== undefined) {
+        updatedTarget = await this.spotify.updatePlaylistDetails(user, updatedTarget, {
+          name: plan.playlistName,
+          description: plan.playlistDescription,
+        });
+      }
+
+      let finalTracks: RotationTrack[] | null = null;
+      if (plan.action === "remove_tracks") {
+        const removeIds = new Set(plan.removeTrackIds);
+        if (removeIds.size === 0) {
+          await sendLogged(space, user._id, "which tracks should i remove?");
+          await convex.mutation(api.conversation.failRequest, {
+            requestId,
+            error: "playlist edit remove target missing",
+            now: Date.now(),
+          });
+          return;
+        }
+        finalTracks = currentTracks.filter((track) => !removeIds.has(track.spotifyTrackId));
+      } else if (plan.action === "add_tracks" || plan.action === "mixed_update") {
+        const addCount = Math.max(1, Math.min(plan.targetCount || 12, 100));
+        const removeIds = new Set(plan.removeTrackIds);
+        const baseTracks =
+          plan.action === "mixed_update"
+            ? currentTracks.filter((track) => !removeIds.has(track.spotifyTrackId))
+            : currentTracks;
+        const additions = await this.tracksForPlaylistEdit({
+          user,
+          text,
+          context,
+          currentTracks: baseTracks,
+          searchQueries: plan.searchQueries,
+          targetCount: addCount,
+          newOnly: true,
+          conversationHistory,
+        });
+        finalTracks = uniqueById([...baseTracks, ...additions]).slice(0, 200);
+      } else if (plan.action === "replace_tracks") {
+        const targetCount = Math.max(
+          8,
+          Math.min(plan.targetCount || currentTracks.length || 40, 200),
+        );
+        const selected = await this.tracksForPlaylistEdit({
+          user,
+          text,
+          context,
+          currentTracks,
+          searchQueries: plan.searchQueries,
+          targetCount,
+          keepTrackIds: plan.keepTrackIds,
+          newOnly: false,
+          conversationHistory,
+        });
+        finalTracks = selected.slice(0, targetCount);
+      }
+
+      if (finalTracks) {
+        await this.spotify.replacePlaylistTracks(user, updatedTarget, finalTracks);
+        updatedTarget = { ...updatedTarget, trackCount: finalTracks.length };
+      }
+
+      await convex.mutation(api.conversation.finishRequest, {
+        requestId,
+        playlistId: updatedTarget.id,
+        playlistUrl: updatedTarget.url,
+        trackIds: finalTracks?.map((track) => track.spotifyTrackId) ??
+          currentTracks.map((track) => track.spotifyTrackId),
+        now: Date.now(),
+      });
+
+      await this.tapback(sourceMessage, "like", user._id);
+      const summary = preserveUrlsLowercase(plan.userFacingSummary);
+      await sendLogged(
+        space,
+        user._id,
+        summary ? `updated ${updatedTarget.name}. ${summary}` : `updated ${updatedTarget.name}.`,
+      );
+      await this.sendPlaylistLink(space, user, updatedTarget.url);
+    } catch (caught) {
+      await convex.mutation(api.conversation.failRequest, {
+        requestId,
+        error: compactError(caught),
+        now: Date.now(),
+      });
+      if (/spotify api 403|spotify api 404/i.test(compactError(caught))) {
+        await sendLogged(space, user._id, "i can't edit that playlist. send one you own or can modify.");
+        return;
+      }
+      throw caught;
+    }
+  }
+
+  private async tracksForPlaylistEdit(args: {
+    user: Doc<"users">;
+    text: string;
+    context: MusicContext;
+    currentTracks: RotationTrack[];
+    searchQueries: string[];
+    targetCount: number;
+    keepTrackIds?: string[];
+    newOnly: boolean;
+    conversationHistory?: ConversationTurn[];
+  }) {
+    const currentIds = new Set(args.currentTracks.map((track) => track.spotifyTrackId));
+    const queries = args.searchQueries.length ? args.searchQueries : [args.text];
+    const candidates = await this.spotify.searchTracks(
+      args.user._id,
+      queries,
+      currentIds,
+      Math.min(300, Math.max(80, args.targetCount * 4)),
+    );
+    const selectionPlan: Awaited<ReturnType<RotationAi["playlistPlan"]>> = {
+      needsPoll: false,
+      playlistName: "playlist edit",
+      playlistDescription: args.text,
+      targetCount: args.targetCount,
+      searchQueries: queries,
+      familiarTrackIds: args.keepTrackIds ?? [],
+      vibe: args.text,
+      userFacingSummary: args.text,
+    };
+    const selected = await this.selectTracks(
+      args.text,
+      selectionPlan,
+      candidates,
+      args.currentTracks,
+      args.newOnly,
+      args.conversationHistory,
+    );
+
+    if (!args.keepTrackIds?.length) return selected;
+    const keepIds = new Set(args.keepTrackIds);
+    const kept = args.currentTracks.filter((track) => keepIds.has(track.spotifyTrackId));
+    return uniqueById([...kept, ...selected]).slice(0, args.targetCount);
+  }
+
+  private async resolveEditablePlaylist(
+    user: Doc<"users">,
+    text: string,
+    context: MusicContext,
+  ): Promise<EditablePlaylist | null> {
+    const linkedId = spotifyPlaylistIdFromText(text);
+    if (linkedId) {
+      const cached = context.playlists.find(
+        (playlist) => playlist.spotifyPlaylistId === linkedId,
+      );
+      return {
+        id: linkedId,
+        name: cached?.name ?? "playlist",
+        description: cached?.description,
+        trackCount: cached?.trackCount ?? 0,
+        url: cached?.externalUrl ?? `https://open.spotify.com/playlist/${linkedId}`,
+      };
+    }
+
+    const named = this.resolvePlaylistByName(text, context);
+    if (named) return named;
+
+    const latest = await convex.query(api.conversation.latestCompletedPlaylistRequest, {
+      userId: user._id,
+    });
+    if (!latest?.playlistId || !latest.playlistUrl) return null;
+    const cached = context.playlists.find(
+      (playlist) => playlist.spotifyPlaylistId === latest.playlistId,
+    );
+    return {
+      id: latest.playlistId,
+      name: cached?.name ?? "last playlist",
+      description: cached?.description,
+      trackCount: cached?.trackCount ?? latest.trackIds?.length ?? 0,
+      url: latest.playlistUrl,
+    };
+  }
+
+  private resolvePlaylistByName(
+    text: string,
+    context: MusicContext,
+  ): EditablePlaylist | null {
+    const cleanText = normalize(text);
+    const explicitName = quotedPlaylistName(text);
+    const cleanName = explicitName ? normalize(explicitName) : undefined;
+    const scored = context.playlists
+      .map((playlist) => {
+        const name = normalize(playlist.name);
+        let score = 0;
+        if (cleanName && name === cleanName) score += 100;
+        if (cleanName && name.includes(cleanName)) score += 70;
+        if (name && cleanText.includes(name)) score += 65;
+        return { playlist, score };
+      })
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score);
+    const best = scored[0]?.playlist;
+    if (!best) return null;
+    return {
+      id: best.spotifyPlaylistId,
+      name: best.name,
+      description: best.description,
+      trackCount: best.trackCount,
+      url: best.externalUrl ?? `https://open.spotify.com/playlist/${best.spotifyPlaylistId}`,
+    };
   }
 
   private async createPlaylistFromPrompt(

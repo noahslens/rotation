@@ -53,6 +53,14 @@ export type CreatedPlaylist = {
   uri: string;
 };
 
+export type EditablePlaylist = {
+  id: string;
+  name: string;
+  url: string;
+  description?: string;
+  trackCount: number;
+};
+
 type SpotifyImage = { url: string };
 type SpotifyExternalUrls = { spotify?: string };
 type SpotifyArtist = { id: string; name: string };
@@ -359,12 +367,131 @@ export class SpotifyService {
       now: Date.now(),
     });
 
+    await this.cachePlaylist(user, {
+      id: playlist.id,
+      name: playlist.name,
+      description: input.description,
+      trackCount: input.tracks.length,
+      url: playlist.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlist.id}`,
+    });
+
     return {
       id: playlist.id,
       name: playlist.name,
       uri: playlist.uri,
       url: playlist.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlist.id}`,
     };
+  }
+
+  async getPlaylistTracks(
+    userId: Id<"users">,
+    playlistId: string,
+    maxItems = 300,
+  ) {
+    const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
+      userId,
+      `/playlists/${playlistId}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
+      maxItems,
+    );
+    return items
+      .map((item) => mapTrack(item.item ?? item.track, "playlist", [playlistId]))
+      .filter((track): track is RotationTrack => Boolean(track));
+  }
+
+  async replacePlaylistTracks(
+    user: Doc<"users">,
+    playlist: EditablePlaylist,
+    tracks: RotationTrack[],
+  ) {
+    const uris = tracks.map((track) => track.uri).filter(Boolean);
+    await this.request(user._id, `/playlists/${playlist.id}/tracks`, {
+      method: "PUT",
+      body: JSON.stringify({ uris: uris.slice(0, 100) }),
+    });
+    for (let index = 100; index < uris.length; index += 100) {
+      await this.request(user._id, `/playlists/${playlist.id}/items`, {
+        method: "POST",
+        body: JSON.stringify({ uris: uris.slice(index, index + 100) }),
+      });
+    }
+
+    await convex.mutation(api.spotify.saveCreatedTracks, {
+      userId: user._id,
+      tracks: tracks.map((track) => ({
+        spotifyTrackId: track.spotifyTrackId,
+        name: track.name,
+        artists: track.artists,
+        album: track.album,
+        uri: track.uri,
+        externalUrl: track.externalUrl,
+        popularity: track.popularity,
+        durationMs: track.durationMs,
+        explicit: track.explicit,
+        previewUrl: track.previewUrl,
+        source: "created" as const,
+        sources: track.sources,
+        playlistIds: [playlist.id],
+        playlistCount: 1,
+        tasteWeight: track.tasteWeight,
+      })),
+      now: Date.now(),
+    });
+    await this.cachePlaylist(user, {
+      ...playlist,
+      trackCount: tracks.length,
+    });
+  }
+
+  async updatePlaylistDetails(
+    user: Doc<"users">,
+    playlist: EditablePlaylist,
+    input: { name?: string | null; description?: string | null },
+  ) {
+    const nextName = input.name ? spotifyPlainText(input.name) : undefined;
+    const nextDescription =
+      input.description === undefined || input.description === null
+        ? undefined
+        : spotifyPlainText(input.description);
+    if (!nextName && nextDescription === undefined) return playlist;
+
+    await this.request(user._id, `/playlists/${playlist.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        ...(nextName ? { name: nextName.slice(0, 100) } : {}),
+        ...(nextDescription !== undefined
+          ? { description: nextDescription.slice(0, 300) }
+          : {}),
+      }),
+    }, true);
+
+    const updated = {
+      ...playlist,
+      name: nextName ?? playlist.name,
+      description: nextDescription ?? playlist.description,
+    };
+    await this.cachePlaylist(user, updated);
+    return updated;
+  }
+
+  private async cachePlaylist(user: Doc<"users">, playlist: EditablePlaylist) {
+    await convex.mutation(api.spotify.saveSnapshot, {
+      userId: user._id,
+      playlists: [
+        {
+          spotifyPlaylistId: playlist.id,
+          name: playlist.name,
+          description: playlist.description,
+          ownerId: user.spotifyUserId,
+          ownerName: user.spotifyDisplayName,
+          trackCount: playlist.trackCount,
+          public: false,
+          externalUrl: playlist.url,
+        },
+      ],
+      tracks: [],
+      markSynced: false,
+      now: Date.now(),
+    });
   }
 
   async uploadPlaylistCover(

@@ -14,6 +14,7 @@ export const env = {
   convexSiteUrl: process.env.CONVEX_SITE_URL ?? "",
   googleApiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
+  geminiCoverModel: process.env.GEMINI_COVER_MODEL ?? "gemini-3.5-flash",
   spotifyClientId: process.env.SPOTIFY_CLIENT_ID ?? "",
   spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? "",
   spotifyTokenEncryptionKey: process.env.SPOTIFY_TOKEN_ENCRYPTION_KEY ?? "",

@@ -34,6 +34,17 @@ test("stripe payment link carries convex user id as client reference", async () 
   assert.equal(url.searchParams.get("client_reference_id"), "user_123");
 });
 
+test("paywall text includes stripe test card dev note", async () => {
+  const { paywallText } = await import("../src/services/stripe");
+
+  const text = paywallText("user_123", { buildingPlaylist: true });
+
+  assert.match(text, /\$29\.99\/y/);
+  assert.match(text, /4242 4242 4242 4242/);
+  assert.match(text, /any exp \+ cvv/);
+  assert.match(text, /ready by the time you're done/);
+});
+
 test("pre-spotify link detector requires an explicit link request", async () => {
   const { wantsSpotifyLink } = await import("../src/bot/rotationBot");
 

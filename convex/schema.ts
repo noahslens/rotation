@@ -124,6 +124,21 @@ export default defineSchema({
     .index("by_user_track", ["userId", "spotifyTrackId"])
     .index("by_user_source", ["userId", "source"]),
 
+  userPhotos: defineTable({
+    userId: v.id("users"),
+    storageId: v.id("_storage"),
+    name: v.string(),
+    mimeType: v.string(),
+    size: v.optional(v.number()),
+    sourceMessageId: v.optional(v.string()),
+    lastUsedForPlaylistId: v.optional(v.string()),
+    lastUsedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_created", ["userId", "createdAt"]),
+
   conversationTurns: defineTable({
     userId: v.id("users"),
     direction: v.union(v.literal("in"), v.literal("out")),

@@ -12,6 +12,16 @@ import { env } from "../config/env";
 import { api, convex } from "../state/convex";
 import { billingPortalText, paywallText } from "../services/stripe";
 import {
+  type CoverPhotoCandidate,
+  fetchPhotoBytes,
+  isImageMime,
+  listUserPhotos,
+  markPhotoUsed,
+  modelPhotoJpeg,
+  saveUserPhoto,
+  spotifyCoverJpeg,
+} from "../services/photos";
+import {
   type CandidateTrack,
   type RotationTrack,
   SpotifyService,
@@ -31,7 +41,7 @@ const fallbackCopy = {
   greeting:
     "yo, i'm rotation. i'll make your spotify playlists over text. whether it's finding you new music or helping you rediscover old favs in a pinch.",
   linked:
-    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 2-4 mins.",
+    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 1-2 mins.",
   help:
     "ask for stuff like: “morning run”, “more like my liked songs”, “200 songs i’d fw”, or “gym but not corny”.",
   notLinked: "link spotify first and i can start cooking.",
@@ -51,6 +61,44 @@ type ReactionMessage = Message & {
 
 const isReactionMessage = (message: Message): message is ReactionMessage =>
   message.content.type === "reaction";
+
+type AttachmentContent = {
+  type: "attachment";
+  name: string;
+  mimeType: string;
+  size?: number;
+  read: () => Promise<Buffer>;
+};
+
+type PhotoAttachment = {
+  messageId?: string;
+  name: string;
+  mimeType: string;
+  size?: number;
+  read: () => Promise<Buffer>;
+};
+
+const photoAttachmentsFromMessage = (message: Message): PhotoAttachment[] => {
+  const content = message.content;
+  if (content.type === "attachment" && isImageMime(content.mimeType)) {
+    const attachment = content as AttachmentContent;
+    return [
+      {
+        messageId: message.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        read: attachment.read,
+      },
+    ];
+  }
+
+  if (content.type === "group") {
+    return content.items.flatMap((item) => photoAttachmentsFromMessage(item));
+  }
+
+  return [];
+};
 
 const tapbacks = {
   love: "❤️",
@@ -116,6 +164,7 @@ const preserveUrlsLowercase = (text: string) => {
   });
   return placeholderText
     .toLowerCase()
+    .replace(/[\u2014\u2013]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/__url_(\d+)__/g, (_, index: string) => urls[Number(index)] ?? "");
@@ -361,6 +410,11 @@ export class RotationBot {
       await this.handleTapback(space, message);
       return;
     }
+    const photoAttachments = photoAttachmentsFromMessage(message);
+    if (photoAttachments.length) {
+      await this.handlePhotoUpload(space, message, photoAttachments);
+      return;
+    }
     if (!isTextMessage(message)) return;
 
     const platformUserId = message.sender?.id;
@@ -431,6 +485,73 @@ export class RotationBot {
     if (reply) await sendLogged(space, user._id, reply);
   }
 
+  private async handlePhotoUpload(
+    space: Space,
+    message: Message,
+    photoAttachments: PhotoAttachment[],
+  ) {
+    const platformUserId = message.sender?.id;
+    if (!platformUserId) return;
+
+    const now = Date.now();
+    const user = await convex.mutation(api.users.upsertFromMessage, {
+      platform: message.platform,
+      platformUserId,
+      now,
+    });
+    if (!user) return;
+
+    const names = photoAttachments.map((photo) => photo.name).join(", ");
+    await convex.mutation(api.conversation.logTurn, {
+      userId: user._id,
+      direction: "in",
+      text: `uploaded ${photoAttachments.length} photo${photoAttachments.length === 1 ? "" : "s"}: ${names}`,
+      messageId: message.id,
+      now,
+    });
+
+    try {
+      await message.read().catch((caught) => {
+        console.warn("[rotation.photo_read_failed]", compactError(caught));
+      });
+
+      let savedCount = 0;
+      for (const photo of photoAttachments) {
+        const bytes = await photo.read();
+        await saveUserPhoto({
+          userId: user._id,
+          bytes,
+          mimeType: photo.mimeType,
+          name: photo.name,
+          size: photo.size ?? bytes.byteLength,
+          sourceMessageId: photo.messageId ?? message.id,
+        });
+        savedCount += 1;
+      }
+
+      const reply =
+        savedCount === 1
+          ? "saved it. totally optional, but i'll use favorite photos as playlist covers when they fit. you can send photos anytime."
+          : `saved ${savedCount}. totally optional, but i'll use favorite photos as playlist covers when they fit. you can send photos anytime.`;
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, reply);
+      });
+    } catch (caught) {
+      await this.recordFailure(
+        "photo_upload",
+        user._id,
+        { messageId: message.id, count: photoAttachments.length },
+        caught,
+      );
+      console.error("[rotation.photo_upload_failed]", caught);
+      await sendLogged(
+        space,
+        user._id,
+        "couldn't save that photo. try sending it again in a sec.",
+      );
+    }
+  }
+
   private async tapback(
     message: Message,
     reaction?: string | null,
@@ -499,6 +620,11 @@ export class RotationBot {
     });
     if (!user.initialPlaylistStartedAt) {
       await sendLogged(space, user._id, fallbackCopy.linked);
+      await sendLogged(
+        space,
+        user._id,
+        "btw, totally optional: send favorite photos anytime and i'll use them as playlist covers when they fit.",
+      );
       await convex.mutation(api.users.markInitialPlaylistStarted, {
         userId: user._id,
         now: Date.now(),
@@ -892,11 +1018,31 @@ export class RotationBot {
         throw new Error("no tracks selected");
       }
 
-      const playlist = await this.spotify.createPlaylist(user, {
-        name: plan.playlistName,
-        description: plan.playlistDescription,
-        tracks: selected.slice(0, plan.targetCount),
-      });
+      const coverPromise = this.preparePlaylistCover(user._id, args.prompt, plan).catch(
+        (caught) => {
+          console.warn("[rotation.cover_prepare_failed]", compactError(caught));
+          return null;
+        },
+      );
+      const [playlist, cover] = await Promise.all([
+        this.spotify.createPlaylist(user, {
+          name: plan.playlistName,
+          description: plan.playlistDescription,
+          tracks: selected.slice(0, plan.targetCount),
+        }),
+        coverPromise,
+      ]);
+
+      if (cover) {
+        await this.spotify
+          .uploadPlaylistCover(user._id, playlist.id, cover.jpeg)
+          .then(async () => {
+            await markPhotoUsed(cover.photoId, playlist.id);
+          })
+          .catch((caught) => {
+            console.warn("[rotation.cover_upload_failed]", compactError(caught));
+          });
+      }
 
       await convex.mutation(api.conversation.finishRequest, {
         requestId,
@@ -1098,6 +1244,65 @@ export class RotationBot {
           ...familiarTracks.slice(0, Math.max(5, Math.floor(plan.targetCount * 0.15))),
         ]);
     return filled.slice(0, plan.targetCount);
+  }
+
+  private async preparePlaylistCover(
+    userId: Id<"users">,
+    prompt: string,
+    plan: Awaited<ReturnType<RotationAi["playlistPlan"]>>,
+  ): Promise<{ photoId: Id<"userPhotos">; jpeg: Buffer } | null> {
+    const photos = await listUserPhotos(userId);
+    if (photos.length === 0) return null;
+
+    const candidates: CoverPhotoCandidate[] = [];
+    for (const photo of photos) {
+      try {
+        const originalBytes = await fetchPhotoBytes(photo);
+        const modelBytes = await modelPhotoJpeg(originalBytes);
+        candidates.push({
+          id: photo._id,
+          photoId: photo._id,
+          name: photo.name,
+          mimeType: photo.mimeType,
+          uploadedAt: photo.createdAt,
+          originalBytes,
+          modelBytes,
+        });
+      } catch (caught) {
+        console.warn("[rotation.photo_fetch_failed]", {
+          photoId: photo._id,
+          error: compactError(caught),
+        });
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    const selection = await this.ai.chooseCoverPhoto({
+      userPrompt: prompt,
+      playlistName: plan.playlistName,
+      playlistDescription: plan.playlistDescription,
+      vibe: plan.vibe,
+      userFacingSummary: plan.userFacingSummary,
+      photos: candidates.map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        mimeType: candidate.mimeType,
+        uploadedAt: candidate.uploadedAt,
+        bytes: candidate.modelBytes,
+      })),
+    });
+
+    if (!selection.selectedPhotoId || selection.confidence < 0.35) return null;
+    const selected = candidates.find(
+      (candidate) => candidate.id === selection.selectedPhotoId,
+    );
+    if (!selected) return null;
+
+    return {
+      photoId: selected.photoId,
+      jpeg: await spotifyCoverJpeg(selected.originalBytes),
+    };
   }
 
   private async maybeSendPaywall(space: Space, user: Doc<"users">) {

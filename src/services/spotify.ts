@@ -21,6 +21,7 @@ export const spotifyScopes = [
   "user-read-playback-state",
   "playlist-modify-public",
   "playlist-modify-private",
+  "ugc-image-upload",
 ];
 
 export type RotationTrack = {
@@ -359,6 +360,23 @@ export class SpotifyService {
     };
   }
 
+  async uploadPlaylistCover(
+    userId: Id<"users">,
+    playlistId: string,
+    jpegBytes: Buffer,
+  ) {
+    await this.request<null>(
+      userId,
+      `/playlists/${playlistId}/images`,
+      {
+        method: "PUT",
+        headers: { "content-type": "image/jpeg" },
+        body: jpegBytes.toString("base64"),
+      },
+      true,
+    );
+  }
+
   async currentPlayback(userId: Id<"users">) {
     return await this.request<{
       is_playing?: boolean;
@@ -548,7 +566,13 @@ export class SpotifyService {
       }
 
       if (allowEmpty && response.status === 204) return null as T;
-      if (response.ok) return (await response.json()) as T;
+      if (response.ok) {
+        if (allowEmpty) {
+          const text = await response.text();
+          return text ? (JSON.parse(text) as T) : (null as T);
+        }
+        return (await response.json()) as T;
+      }
 
       const body = await response.text();
       const retryable = [429, 500, 502, 503, 504].includes(response.status);

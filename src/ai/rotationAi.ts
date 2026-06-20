@@ -12,6 +12,7 @@ type MusicContext = {
 };
 
 const model = () => google(env.geminiModel);
+const coverModel = () => google(env.geminiCoverModel);
 const providerOptions = {
   google: {
     thinkingConfig: {
@@ -28,6 +29,7 @@ const styleGuide = [
   "use an occasional emoji only when it helps.",
   "keep messages short. never explain internals.",
   "do not mention ai, models, prompts, or tool calls.",
+  "never use em dashes.",
 ].join("\n");
 
 const intentSchema = z.object({
@@ -73,6 +75,12 @@ const textingActionSchema = z.object({
   mode: z.enum(["reaction_only", "message_only", "both", "none"]),
   reaction: z.string().max(24).nullable().optional(),
   message: z.string().max(320).nullable().optional(),
+});
+
+const coverSelectionSchema = z.object({
+  selectedPhotoId: z.string().nullable(),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().max(240),
 });
 
 const firstNameSchema = z.object({
@@ -158,6 +166,7 @@ const preserveUrlsLowercase = (text: string) => {
   });
   return placeholderText
     .toLowerCase()
+    .replace(/[\u2014\u2013]/g, "-")
     .replace(/__url_(\d+)__/g, (_, index: string) => urls[Number(index)] ?? "");
 };
 
@@ -342,7 +351,8 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
 - before spotify is connected, answer lightweight product/setup questions.
 - do not include an auth link or say a link is attached unless the user explicitly asks for one.
 - if they want to connect, tell them to ask for a fresh link.
-- rotation is $29.99/y after the first request.`,
+- only mention price if the user specifically asks about price, cost, paid plans, billing, or subscriptions.
+- if asked about price, say rotation is $29.99/y after the first request.`,
       prompt: JSON.stringify(args, null, 2),
     });
     return {
@@ -365,12 +375,74 @@ facts:
 - after spotify is connected, rotation can read their liked songs, playlists, and listening context to make better playlists.
 - it can make activity/mood playlists, find new music, make more like an artist/playlist, or help rediscover old favorites.
 - spotify must be connected before rotation can make playlists or personalize recommendations.
-- rotation is $29.99/y after their first request.
+- only mention price if they ask about price, cost, paid plans, billing, or subscriptions.
+- if asked about price, say rotation is $29.99/y after their first request.
 - do not include an auth link or tell them a link is attached.
 - if they want to connect, tell them to ask for a fresh link when they're ready.
 
 user text: ${userText}`,
     });
     return preserveUrlsLowercase(result.text.trim());
+  }
+
+  async chooseCoverPhoto(args: {
+    userPrompt: string;
+    playlistName: string;
+    playlistDescription: string;
+    vibe: string;
+    userFacingSummary: string;
+    photos: Array<{
+      id: string;
+      name: string;
+      uploadedAt: number;
+      mimeType: string;
+      bytes: Buffer;
+    }>;
+  }) {
+    if (args.photos.length === 0) {
+      return { selectedPhotoId: null, confidence: 0, reason: "no photos" };
+    }
+
+    const content = [
+      {
+        type: "text" as const,
+        text: `pick the single saved user photo that best fits this spotify playlist cover.
+
+playlist:
+name: ${args.playlistName}
+description: ${args.playlistDescription}
+vibe: ${args.vibe}
+request: ${args.userPrompt}
+summary: ${args.userFacingSummary}
+
+rules:
+- select one photo only if it clearly fits the playlist mood, activity, scene, or energy.
+- prefer personal-feeling photos over generic ones when both fit.
+- if none fit, return selectedPhotoId as null.
+- respond only through the schema.
+
+photos are provided below, each preceded by its id.`,
+      },
+      ...args.photos.flatMap((photo, index) => [
+        {
+          type: "text" as const,
+          text: `photo ${index + 1}: id=${photo.id}, name=${photo.name}, uploadedAt=${photo.uploadedAt}`,
+        },
+        {
+          type: "image" as const,
+          image: photo.bytes,
+          mediaType: "image/jpeg",
+        },
+      ]),
+    ];
+
+    const result = await generateObject({
+      model: coverModel(),
+      schema: coverSelectionSchema,
+      providerOptions,
+      system: styleGuide,
+      messages: [{ role: "user", content }],
+    });
+    return result.object;
   }
 }

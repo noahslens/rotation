@@ -265,6 +265,15 @@ export const resetByPlatformUser = mutation({
     }
 
     for (const doc of await ctx.db
+      .query("userPhotos")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.storage.delete(doc.storageId);
+      await ctx.db.delete(doc._id);
+      bump("userPhotos");
+    }
+
+    for (const doc of await ctx.db
       .query("conversationTurns")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect()) {

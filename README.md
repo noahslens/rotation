@@ -67,6 +67,22 @@ Run Convex while developing schema/functions:
 npx convex dev
 ```
 
+## Deploy
+
+Convex hosts the database plus the Spotify OAuth and Stripe webhook HTTP routes.
+The Spectrum iMessage listener is a long-running stream, so it should run as an
+always-on Node worker rather than inside a Convex function.
+
+Railway is the simplest production target:
+
+```sh
+npm install
+npm run start
+```
+
+Set the same `.env` values in Railway. Keep `CONVEX_URL` and
+`CONVEX_SITE_URL` pointed at the linked Convex deployment.
+
 ## Notes
 
 Spotify's public recommendations/audio-feature endpoints are not used. Rotation

@@ -53,7 +53,7 @@ const playlistPlanSchema = z.object({
   playlistDescription: z.string().min(1).max(240),
   targetCount: z.number().int().min(8).max(200),
   searchQueries: z.array(z.string().min(2).max(120)).min(4).max(40),
-  familiarTrackIds: z.array(z.string()).max(25),
+  familiarTrackIds: z.array(z.string()).max(200),
   vibe: z.string().max(160),
   userFacingSummary: z.string().min(1).max(320),
 });
@@ -80,8 +80,11 @@ const compactTrack = (
     | "artists"
     | "album"
     | "source"
+    | "sources"
     | "popularity"
     | "playlistIds"
+    | "playlistCount"
+    | "tasteWeight"
   >,
 ) => ({
   id: track.spotifyTrackId,
@@ -89,13 +92,22 @@ const compactTrack = (
   artists: track.artists.slice(0, 3),
   album: track.album,
   source: track.source,
+  sources: track.sources,
   popularity: track.popularity,
   playlistIds: track.playlistIds,
+  playlistCount: track.playlistCount,
+  tasteWeight: track.tasteWeight,
 });
 
 const contextForModel = (context: MusicContext) => {
-  const savedTracks = context.tracks.filter((track) => track.source === "saved");
-  const otherTracks = context.tracks.filter((track) => track.source !== "saved");
+  const hasSource = (track: RotationTrack, source: RotationTrack["source"]) =>
+    track.source === source || Boolean(track.sources?.includes(source));
+  const byWeight = (left: RotationTrack, right: RotationTrack) =>
+    (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0);
+  const savedTracks = context.tracks.filter((track) => hasSource(track, "saved"));
+  const topTracks = context.tracks.filter((track) => hasSource(track, "top"));
+  const playlistTracks = context.tracks.filter((track) => hasSource(track, "playlist"));
+  const createdTracks = context.tracks.filter((track) => hasSource(track, "created"));
 
   return {
     user: {
@@ -107,10 +119,13 @@ const contextForModel = (context: MusicContext) => {
     },
     stats: {
       savedTrackCount: savedTracks.length,
-      otherTrackCount: otherTracks.length,
+      topTrackCount: topTracks.length,
+      playlistTrackCount: playlistTracks.length,
+      createdTrackCount: createdTracks.length,
+      totalTrackCount: context.tracks.length,
       playlistCount: context.playlists.length,
     },
-    playlists: context.playlists.slice(0, 300).map((playlist) => ({
+    playlists: context.playlists.map((playlist) => ({
       id: playlist.spotifyPlaylistId,
       name: playlist.name,
       description: playlist.description,
@@ -121,8 +136,10 @@ const contextForModel = (context: MusicContext) => {
       ),
       trackCount: playlist.trackCount,
     })),
-    savedTracks: savedTracks.map(compactTrack),
-    otherTracks: otherTracks.slice(0, 2_800).map(compactTrack),
+    savedTracks: savedTracks.sort(byWeight).map(compactTrack),
+    topTracks: topTracks.sort(byWeight).map(compactTrack),
+    playlistTracks: playlistTracks.sort(byWeight).map(compactTrack),
+    createdTracks: createdTracks.sort(byWeight).map(compactTrack),
   };
 };
 
@@ -174,8 +191,13 @@ export class RotationAi {
       providerOptions,
       system: `${styleGuide}
 
-you choose music by using the user's spotify library context and spotify catalog search.
+you choose music by using the user's full stored spotify song history plus spotify catalog search.
+the musicContext contains full stored song history by source: liked songs in savedTracks, listening-history proxy tracks in topTracks, user-owned playlist tracks in playlistTracks, and prior rotation outputs in createdTracks.
+each track can include sources, playlistCount, and tasteWeight. tasteWeight is computed in convex from liked status, spotify top-track presence, and number of user-owned playlists containing the track.
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
+do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
+ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
+for balanced/activity playlists, you may pull directly from the user's history when those songs fit the moment, or use the fitting songs as seeds to find adjacent new music.
 think deeply about patterns across the liked songs: recurring artists, microgenres, production texture, era, mood, tempo, vocal style, scenes, and adjacent songs similar in nature.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
@@ -222,9 +244,10 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
+filter against the user's prompt first: a song that is in their history but wrong for the mood/activity should be ignored.
 if novelty mode is new_music_only, return only candidate track ids. use familiar tracks only as taste references, never as playlist picks.
 for new music/discovery, prioritize tracks that fit the user's taste but are less obvious: adjacent artists, deeper cuts, and non-super-mainstream songs. avoid huge hits unless explicitly requested.
-if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks when they strongly fit.
+if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks from the user's history when they strongly fit the request.
 avoid duplicate artists too close together unless the prompt asks for one artist.
 return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: JSON.stringify(
@@ -233,8 +256,8 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
           plan: args.plan,
           noveltyMode: args.newOnly ? "new_music_only" : "balanced",
           targetCount: args.plan.targetCount,
-          candidates: args.candidates.slice(0, 260).map(compactTrack),
-          familiarTracks: args.familiarTracks.slice(0, 80).map(compactTrack),
+          candidates: args.candidates.slice(0, 320).map(compactTrack),
+          familiarTracks: args.familiarTracks.map(compactTrack),
         },
         null,
         2,

@@ -694,11 +694,21 @@ export class RotationBot {
 
   private async fullMusicContext(userId: Id<"users">): Promise<MusicContext> {
     const context = await convex.query(api.spotify.getMusicContext, { userId });
-    const savedTracks = await this.fetchTracksBySource(userId, "saved");
-    const otherTracks = context.tracks.filter((track) => track.source !== "saved");
+    const [savedTracks, topTracks, playlistTracks, createdTracks] =
+      await Promise.all([
+        this.fetchTracksBySource(userId, "saved"),
+        this.fetchTracksBySource(userId, "top"),
+        this.fetchTracksBySource(userId, "playlist"),
+        this.fetchTracksBySource(userId, "created"),
+      ]);
     return {
       ...context,
-      tracks: uniqueById([...savedTracks, ...otherTracks]),
+      tracks: uniqueById([
+        ...savedTracks,
+        ...topTracks,
+        ...playlistTracks,
+        ...createdTracks,
+      ]),
     };
   }
 
@@ -746,7 +756,7 @@ export class RotationBot {
       .filter((track): track is Doc<"spotifyTracks"> => Boolean(track));
     const fallback = tracks
       .filter((track) => track.source === "saved" || track.source === "top")
-      .slice(0, 60);
+      .slice(0, 200);
     return uniqueById([...preferred, ...fallback]).map((track) => ({
       spotifyTrackId: track.spotifyTrackId,
       name: track.name,

@@ -6,7 +6,6 @@ import { decryptToken, encryptToken } from "../utils/tokenCrypto";
 const accountsBaseUrl = "https://accounts.spotify.com";
 const apiBaseUrl = "https://api.spotify.com/v1";
 const refreshSkewMs = 90_000;
-const maxPlaylistTracksForTaste = 120;
 const snapshotTrackBatchSize = 400;
 const spotifyPageConcurrency = 8;
 const spotifyRequestTimeoutMs = 20_000;
@@ -36,7 +35,10 @@ export type RotationTrack = {
   explicit?: boolean;
   previewUrl?: string;
   source: "saved" | "playlist" | "top" | "recommendation" | "created";
+  sources?: Array<RotationTrack["source"]>;
   playlistIds?: string[];
+  playlistCount?: number;
+  tasteWeight?: number;
 };
 
 export type CandidateTrack = RotationTrack & {
@@ -113,17 +115,40 @@ const mapTrack = (
     explicit: track.explicit,
     previewUrl: track.preview_url ?? undefined,
     source,
+    sources: [source],
     playlistIds,
+    playlistCount: playlistIds?.length,
   };
 };
 
-const dedupeTracks = <T extends RotationTrack>(tracks: T[]) => {
-  const seen = new Set<string>();
-  return tracks.filter((track) => {
-    if (seen.has(track.spotifyTrackId)) return false;
-    seen.add(track.spotifyTrackId);
-    return true;
-  });
+const dedupeTracks = (tracks: RotationTrack[]) => {
+  const byId = new Map<string, RotationTrack>();
+  for (const track of tracks) {
+    const existing = byId.get(track.spotifyTrackId);
+    if (!existing) {
+      byId.set(track.spotifyTrackId, {
+        ...track,
+        sources: track.sources ?? [track.source],
+        playlistIds: track.playlistIds ?? [],
+        playlistCount: track.playlistIds?.length ?? track.playlistCount,
+      });
+      continue;
+    }
+
+    const playlistIds = Array.from(
+      new Set([...(existing.playlistIds ?? []), ...(track.playlistIds ?? [])]),
+    );
+    const sources = Array.from(
+      new Set([...(existing.sources ?? [existing.source]), ...(track.sources ?? [track.source])]),
+    );
+    byId.set(track.spotifyTrackId, {
+      ...existing,
+      playlistIds,
+      sources,
+      playlistCount: playlistIds.length || existing.playlistCount || track.playlistCount,
+    });
+  }
+  return [...byId.values()];
 };
 
 export class SpotifyService {
@@ -164,14 +189,18 @@ export class SpotifyService {
       topTracks: topTracks.length,
     });
 
+    const ownedPlaylists = spotifyUserId
+      ? playlists.filter((playlist) => playlist.owner?.id === spotifyUserId)
+      : [];
     const playlistTracks = await this.getTracksFromPlaylists(
       userId,
-      this.weightPlaylistsForTaste(playlists, spotifyUserId).slice(0, 40),
+      this.weightPlaylistsForTaste(ownedPlaylists, spotifyUserId),
     );
     const tracks = dedupeTracks([...savedTracks, ...topTracks, ...playlistTracks]);
     console.info("[spotify.sync] fetched playlist tracks", {
       userId,
       playlistTracks: playlistTracks.length,
+      ownedPlaylists: ownedPlaylists.length,
       dedupedTracks: tracks.length,
     });
 
@@ -314,7 +343,10 @@ export class SpotifyService {
         explicit: track.explicit,
         previewUrl: track.previewUrl,
         source: "created" as const,
+        sources: track.sources,
         playlistIds: track.playlistIds,
+        playlistCount: track.playlistCount,
+        tasteWeight: track.tasteWeight,
       })),
       now: Date.now(),
     });
@@ -408,7 +440,6 @@ export class SpotifyService {
       const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
         userId,
         `/playlists/${playlist.id}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
-        maxPlaylistTracksForTaste,
       );
       tracks.push(
         ...items

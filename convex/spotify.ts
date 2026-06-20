@@ -22,7 +22,10 @@ const trackArg = v.object({
   explicit: v.optional(v.boolean()),
   previewUrl: v.optional(v.string()),
   source: sourceArg,
+  sources: v.optional(v.array(sourceArg)),
   playlistIds: v.optional(v.array(v.string())),
+  playlistCount: v.optional(v.number()),
+  tasteWeight: v.optional(v.number()),
 });
 
 const playlistArg = v.object({
@@ -36,6 +39,28 @@ const playlistArg = v.object({
   public: v.optional(v.boolean()),
   externalUrl: v.optional(v.string()),
 });
+
+const sourceRank: Record<string, number> = {
+  saved: 5,
+  top: 4,
+  playlist: 3,
+  recommendation: 2,
+  created: 1,
+};
+
+const primarySource = (sources: string[]) =>
+  sources.reduce((best, source) =>
+    (sourceRank[source] ?? 0) > (sourceRank[best] ?? 0) ? source : best,
+  );
+
+const tasteWeight = (sources: string[], playlistCount: number) => {
+  let weight = 0;
+  if (sources.includes("saved")) weight += 10;
+  if (sources.includes("top")) weight += 6;
+  if (sources.includes("playlist")) weight += Math.min(playlistCount, 12) * 2;
+  if (sources.includes("created")) weight += 1;
+  return weight;
+};
 
 export const createAuthState = mutation({
   args: {
@@ -221,15 +246,34 @@ export const saveSnapshot = mutation({
         const playlistIds = Array.from(
           new Set([...(existing.playlistIds ?? []), ...(track.playlistIds ?? [])]),
         );
+        const sources = Array.from(
+          new Set([
+            ...(existing.sources ?? [existing.source]),
+            ...(track.sources ?? [track.source]),
+          ]),
+        );
+        const playlistCount = playlistIds.length || track.playlistCount || 0;
         await ctx.db.patch(existing._id, {
           ...track,
           playlistIds,
+          sources,
+          source: primarySource(sources) as typeof track.source,
+          playlistCount,
+          tasteWeight: tasteWeight(sources, playlistCount),
           updatedAt: args.now,
         });
       } else {
+        const playlistIds = track.playlistIds ?? [];
+        const sources = track.sources ?? [track.source];
+        const playlistCount = playlistIds.length || track.playlistCount || 0;
         await ctx.db.insert("spotifyTracks", {
           userId: args.userId,
           ...track,
+          playlistIds,
+          sources,
+          source: primarySource(sources) as typeof track.source,
+          playlistCount,
+          tasteWeight: tasteWeight(sources, playlistCount),
           firstSeenAt: args.now,
           updatedAt: args.now,
         });
@@ -327,14 +371,37 @@ export const saveCreatedTracks = mutation({
         .unique();
 
       if (existing) {
+        const playlistIds = Array.from(
+          new Set([...(existing.playlistIds ?? []), ...(track.playlistIds ?? [])]),
+        );
+        const sources = Array.from(
+          new Set([
+            ...(existing.sources ?? [existing.source]),
+            ...(track.sources ?? [track.source]),
+          ]),
+        );
+        const playlistCount = playlistIds.length || track.playlistCount || 0;
         await ctx.db.patch(existing._id, {
           ...track,
+          playlistIds,
+          sources,
+          source: primarySource(sources) as typeof track.source,
+          playlistCount,
+          tasteWeight: tasteWeight(sources, playlistCount),
           updatedAt: args.now,
         });
       } else {
+        const playlistIds = track.playlistIds ?? [];
+        const sources = track.sources ?? [track.source];
+        const playlistCount = playlistIds.length || track.playlistCount || 0;
         await ctx.db.insert("spotifyTracks", {
           userId: args.userId,
           ...track,
+          playlistIds,
+          sources,
+          source: primarySource(sources) as typeof track.source,
+          playlistCount,
+          tasteWeight: tasteWeight(sources, playlistCount),
           firstSeenAt: args.now,
           updatedAt: args.now,
         });

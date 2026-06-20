@@ -103,7 +103,20 @@ export default defineSchema({
       v.literal("recommendation"),
       v.literal("created"),
     ),
+    sources: v.optional(
+      v.array(
+        v.union(
+          v.literal("saved"),
+          v.literal("playlist"),
+          v.literal("top"),
+          v.literal("recommendation"),
+          v.literal("created"),
+        ),
+      ),
+    ),
     playlistIds: v.optional(v.array(v.string())),
+    playlistCount: v.optional(v.number()),
+    tasteWeight: v.optional(v.number()),
     firstSeenAt: v.number(),
     updatedAt: v.number(),
   })

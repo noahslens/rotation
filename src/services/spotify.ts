@@ -231,7 +231,7 @@ export class SpotifyService {
 
     const uris = input.tracks.map((track) => track.uri).filter(Boolean);
     for (let index = 0; index < uris.length; index += 100) {
-      await this.request(user._id, `/playlists/${playlist.id}/tracks`, {
+      await this.request(user._id, `/playlists/${playlist.id}/items`, {
         method: "POST",
         body: JSON.stringify({ uris: uris.slice(index, index + 100) }),
       });
@@ -303,14 +303,14 @@ export class SpotifyService {
     for (const playlist of playlists) {
       const total = playlist.tracks?.total ?? 0;
       if (!playlist.id || total === 0) continue;
-      const items = await this.paginate<{ track?: SpotifyTrack }>(
+      const items = await this.paginate<{ item?: SpotifyTrack; track?: SpotifyTrack }>(
         userId,
-        `/playlists/${playlist.id}/tracks?limit=50&fields=items(track(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
+        `/playlists/${playlist.id}/items?limit=50&fields=items(item(id,name,artists(name),album(name),uri,external_urls,popularity,duration_ms,explicit,preview_url,is_local)),next`,
         100,
       );
       tracks.push(
         ...items
-          .map((item) => mapTrack(item.track, "playlist", [playlist.id]))
+          .map((item) => mapTrack(item.item ?? item.track, "playlist", [playlist.id]))
           .filter((track): track is RotationTrack => Boolean(track)),
       );
     }

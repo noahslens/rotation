@@ -15,6 +15,9 @@ export const env = {
   googleApiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
   geminiCoverModel: process.env.GEMINI_COVER_MODEL ?? "gemini-3.5-flash",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  anthropicPlaylistModel:
+    process.env.ANTHROPIC_PLAYLIST_MODEL ?? "claude-sonnet-4-5-20250929",
   spotifyClientId: process.env.SPOTIFY_CLIENT_ID ?? "",
   spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? "",
   spotifyTokenEncryptionKey: process.env.SPOTIFY_TOKEN_ENCRYPTION_KEY ?? "",

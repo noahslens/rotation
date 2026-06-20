@@ -11,6 +11,7 @@
     "convex:codegen": "convex codegen --typecheck disable"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.85",
     "@ai-sdk/google": "^3.0.83",
     "ai": "^6.0.208",
     "convex": "^1.41.0",

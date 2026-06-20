@@ -111,6 +111,18 @@ export const finishRequest = mutation({
     playlistId: v.optional(v.string()),
     playlistUrl: v.optional(v.string()),
     trackIds: v.optional(v.array(v.string())),
+    playlistVariants: v.optional(
+      v.array(
+        v.object({
+          provider: v.string(),
+          label: v.string(),
+          playlistId: v.string(),
+          playlistUrl: v.string(),
+          playlistName: v.string(),
+          trackIds: v.array(v.string()),
+        }),
+      ),
+    ),
     now: v.number(),
   },
   handler: async (ctx, args) => {
@@ -119,6 +131,7 @@ export const finishRequest = mutation({
       playlistId: args.playlistId,
       playlistUrl: args.playlistUrl,
       trackIds: args.trackIds,
+      playlistVariants: args.playlistVariants,
       updatedAt: args.now,
     });
   },

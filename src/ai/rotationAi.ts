@@ -1,4 +1,5 @@
 import { google } from "@ai-sdk/google";
+import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -20,6 +21,9 @@ export type ConversationTurn = {
 
 const model = () => google(env.geminiModel);
 const coverModel = () => google(env.geminiCoverModel);
+export type PlaylistAiProvider = "gemini" | "sonnet";
+const playlistModel = (provider: PlaylistAiProvider = "gemini") =>
+  provider === "sonnet" ? anthropic(env.anthropicPlaylistModel) : model();
 const providerOptions = {
   google: {
     thinkingConfig: {
@@ -32,6 +36,14 @@ const generationSettings = {
   temperature: 1,
   providerOptions,
 };
+const playlistGenerationSettings = (
+  provider: PlaylistAiProvider = "gemini",
+) =>
+  provider === "gemini"
+    ? generationSettings
+    : {
+        temperature: 1,
+      };
 
 const styleGuide = [
   "you are rotation, a music concierge that texts like a sharp friend.",
@@ -339,11 +351,13 @@ ${JSON.stringify(
     newOnly?: boolean;
     fixedTargetCount?: boolean;
     conversationHistory?: ConversationTurn[];
+    provider?: PlaylistAiProvider;
   }) {
+    const provider = args.provider ?? "gemini";
     const result = await generateObject({
-      model: model(),
+      model: playlistModel(provider),
       schema: playlistPlanSchema,
-      ...generationSettings,
+      ...playlistGenerationSettings(provider),
       system: `${styleGuide}
 
 you choose music by using the user's full stored spotify song history plus spotify catalog search.
@@ -405,11 +419,13 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     newOnly?: boolean;
     familiarMixPercent?: number;
     conversationHistory?: ConversationTurn[];
+    provider?: PlaylistAiProvider;
   }) {
+    const provider = args.provider ?? "gemini";
     const result = await generateObject({
-      model: model(),
+      model: playlistModel(provider),
       schema: selectedTracksSchema,
-      ...generationSettings,
+      ...playlistGenerationSettings(provider),
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.

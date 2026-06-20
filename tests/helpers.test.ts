@@ -99,6 +99,18 @@ test("playlist links use web richlinks instead of spectrum app cards", async () 
   assert.equal(built.url, "https://open.spotify.com/playlist/abc123");
 });
 
+test("playlist vote poll options are compact and ordered", async () => {
+  const { playlistVoteOptions } = await import("../src/bot/rotationBot");
+
+  assert.deepEqual(
+    playlistVoteOptions([
+      "first extremely long playlist name that should not crush the poll",
+      "short one",
+    ]),
+    ["first: first extremely long", "second: short one"],
+  );
+});
+
 test("playlist edit detector handles edits without stealing more-like requests", async () => {
   const { playlistEditIntent, spotifyPlaylistIdFromText } = await import("../src/bot/rotationBot");
 

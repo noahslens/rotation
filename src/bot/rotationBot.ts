@@ -7,7 +7,11 @@ import {
   type ContentInput,
 } from "spectrum-ts";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { RotationAi, type ConversationTurn } from "../ai/rotationAi";
+import {
+  RotationAi,
+  type ConversationTurn,
+  type PlaylistAiProvider,
+} from "../ai/rotationAi";
 import { env } from "../config/env";
 import { api, convex } from "../state/convex";
 import {
@@ -44,6 +48,18 @@ type TextingAction = {
   mode?: "reaction_only" | "message_only" | "both" | "none";
   reaction?: string | null;
   message?: string | null;
+};
+type PlaylistPlan = Awaited<ReturnType<RotationAi["playlistPlan"]>>;
+type PlaylistVariantResult = {
+  provider: PlaylistAiProvider;
+  label: string;
+  plan: PlaylistPlan;
+  selected: RotationTrack[];
+  playlist: {
+    id: string;
+    name: string;
+    url: string;
+  };
 };
 
 const fallbackCopy = {
@@ -413,6 +429,23 @@ const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
 const initialProgressMessage = "starting with your liked songs now.";
 const readySoonProgressMessage = "still working. it'll be ready soon.";
+const playlistProviders = (): PlaylistAiProvider[] =>
+  env.anthropicApiKey ? ["gemini", "sonnet"] : ["gemini"];
+const playlistProviderLabel = (provider: PlaylistAiProvider) =>
+  provider === "sonnet" ? "sonnet" : "gemini";
+const ordinalLabel = (index: number) =>
+  index === 0 ? "first" : index === 1 ? "second" : `option ${index + 1}`;
+const compactPollName = (name: string) => {
+  const clean = preserveUrlsLowercase(name).replace(/[^\p{L}\p{N}\s'&]/gu, "");
+  return clean.length > 22 ? clean.slice(0, 21).trim() : clean;
+};
+
+export const playlistVoteOptions = (playlistNames: string[]) =>
+  playlistNames.map((name, index) => {
+    const label = ordinalLabel(index);
+    const compact = compactPollName(name) || `playlist ${index + 1}`;
+    return `${label}: ${compact}`.slice(0, 40);
+  });
 
 export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
@@ -1851,7 +1884,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      "that first one is 75 songs. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.";
+      "those first ones are 75 songs each. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.";
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,
@@ -2621,141 +2654,125 @@ export class RotationBot {
       }
       const context = args.precomputedContext ?? (await this.freshMusicContext(user));
       const newOnly = shouldUseNewOnly(args);
-      const rawPlan =
-        args.precomputedPlan ??
-        (await this.ai.playlistPlan({
-          prompt: args.prompt,
-          context,
-          defaultCount: args.defaultCount,
-          pollAnswer: args.pollAnswer,
-          newOnly,
-          fixedTargetCount: args.requestKind !== "user",
-          conversationHistory: args.conversationHistory,
-        }));
-      const plan =
-        args.requestKind === "user"
-          ? rawPlan
-          : { ...rawPlan, targetCount: args.defaultCount };
-
-      if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length && !args.pollAnswer) {
+      const providerPlans = await Promise.all(
+        playlistProviders().map(async (provider) => {
+          const rawPlan =
+            provider === "gemini" && args.precomputedPlan
+              ? args.precomputedPlan
+              : await this.ai.playlistPlan({
+                  prompt: args.prompt,
+                  context,
+                  defaultCount: args.defaultCount,
+                  pollAnswer: args.pollAnswer,
+                  newOnly,
+                  fixedTargetCount: args.requestKind !== "user",
+                  conversationHistory: args.conversationHistory,
+                  provider,
+                });
+          return {
+            provider,
+            label: playlistProviderLabel(provider),
+            plan:
+              args.requestKind === "user"
+                ? rawPlan
+                : { ...rawPlan, targetCount: args.defaultCount },
+          };
+        }),
+      );
+      const pollPlan = providerPlans.find(
+        ({ plan }) => plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length,
+      )?.plan;
+      if (
+        pollPlan?.needsPoll &&
+        pollPlan.pollQuestion &&
+        pollPlan.pollOptions?.length &&
+        !args.pollAnswer
+      ) {
         await convex.mutation(api.conversation.createPendingPoll, {
           userId: user._id,
           originalPrompt: args.prompt,
           deliveryMode: args.deferDeliveryUntilPaid ? "after_payment" : "immediate",
-          question: plan.pollQuestion,
-          options: plan.pollOptions,
+          question: pollPlan.pollQuestion,
+          options: pollPlan.pollOptions,
           expiresAt: Date.now() + 30 * 60 * 1000,
           now: Date.now(),
         });
-        await space.send(poll(plan.pollQuestion, plan.pollOptions));
+        await space.send(poll(pollPlan.pollQuestion, pollPlan.pollOptions));
         await outbound(
           user._id,
-          `${plan.pollQuestion} ${plan.pollOptions.join(" / ")}`,
+          `${pollPlan.pollQuestion} ${pollPlan.pollOptions.join(" / ")}`,
         );
         return;
       }
 
-      const finalTargetCount = plan.targetCount;
-      const selectionPlan =
-        args.requestKind === "initial"
-          ? { ...plan, targetCount: Math.min(200, Math.max(plan.targetCount, 80)) }
-          : plan;
-      const knownTrackIds = new Set(
-        context.tracks.map((track) => track.spotifyTrackId),
-      );
-      const openerQuery = explicitOpenerQuery(args.prompt);
-      const searchQueries = openerQuery
-        ? [
-            openerQuery,
-            ...plan.searchQueries.filter(
-              (query) => normalize(query) !== normalize(openerQuery),
-            ),
-          ]
-        : plan.searchQueries;
-      const rawCandidates = await this.spotify.searchTracks(
+      const primaryPlan = providerPlans[0]?.plan;
+      if (!primaryPlan) throw new Error("no playlist plans generated");
+      const coverPromise = this.preparePlaylistCover(
         user._id,
-        searchQueries,
-        knownTrackIds,
-        Math.min(600, Math.max(240, selectionPlan.targetCount * 3)),
-      );
-      const candidates = newOnly
-        ? rankDiscoveryCandidates(rawCandidates)
-        : rawCandidates;
-      const familiarTracks = this.familiarTracks(
-        context.tracks,
-        plan.familiarTrackIds,
-      );
-      const familiarPercent = familiarMixPercent(args.pollAnswer);
-      const allowSameArtistTitleRepeats = allowsRepeatedSongVersions(args.prompt);
-      const selectedWithBuffer = finalizeSelectedTracks(
-        await this.selectTracks(
-          args.prompt,
-          selectionPlan,
-          candidates,
-          familiarTracks,
-          newOnly,
-          familiarPercent,
-          args.conversationHistory,
+        args.prompt,
+        primaryPlan,
+      ).catch((caught) => {
+        console.warn("[rotation.cover_prepare_failed]", compactError(caught));
+        return null;
+      });
+      const variants = await Promise.all(
+        providerPlans.map(({ provider, label, plan }) =>
+          this.createPlaylistVariant({
+            provider,
+            label,
+            user,
+            prompt: args.prompt,
+            requestKind: args.requestKind,
+            pollAnswer: args.pollAnswer,
+            plan,
+            context,
+            newOnly,
+            conversationHistory: args.conversationHistory,
+          }),
         ),
-        [...context.tracks, ...candidates, ...familiarTracks],
-        openerQuery,
       );
-      const selectedPool = newOnly
-        ? uniquePlaylistTracks([
-            ...filterKnownLibraryTracks(selectedWithBuffer, context.tracks),
-            ...filterKnownLibraryTracks(candidates, context.tracks),
-          ], { allowSameArtistTitleRepeats })
-        : applyFamiliarMix({
-            selected: selectedWithBuffer,
-            candidates,
-            familiarTracks,
-            targetCount: finalTargetCount,
-            familiarPercent,
-            allowSameArtistTitleRepeats,
-          });
-      const selected =
-        args.requestKind === "initial"
-          ? enforcePlaylistDiversity(selectedPool, {
-              maxPerAlbum: 2,
-              maxPerArtist: 4,
-            }).slice(0, finalTargetCount)
-          : selectedPool.slice(0, finalTargetCount);
-
-      if (selected.length === 0) {
-        throw new Error("no tracks selected");
-      }
-
-      const coverPromise = this.preparePlaylistCover(user._id, args.prompt, plan).catch(
-        (caught) => {
-          console.warn("[rotation.cover_prepare_failed]", compactError(caught));
-          return null;
-        },
-      );
-      const [playlist, cover] = await Promise.all([
-        this.spotify.createPlaylist(user, {
-          name: plan.playlistName,
-          description: plan.playlistDescription,
-          tracks: selected,
-        }),
-        coverPromise,
-      ]);
-
+      const cover = await coverPromise;
       if (cover) {
-        await this.spotify
-          .uploadPlaylistCover(user._id, playlist.id, cover.jpeg)
-          .then(async () => {
-            await markPhotoUsed(cover.photoId, playlist.id, playlist.name);
-          })
-          .catch((caught) => {
-            console.warn("[rotation.cover_upload_failed]", compactError(caught));
-          });
+        let markedPhotoUsed = false;
+        await Promise.all(
+          variants.map(async (variant) => {
+            await this.spotify
+              .uploadPlaylistCover(user._id, variant.playlist.id, cover.jpeg)
+              .then(async () => {
+                if (!markedPhotoUsed) {
+                  markedPhotoUsed = true;
+                  await markPhotoUsed(
+                    cover.photoId,
+                    variant.playlist.id,
+                    variant.playlist.name,
+                  );
+                }
+              })
+              .catch((caught) => {
+                console.warn("[rotation.cover_upload_failed]", {
+                  provider: variant.provider,
+                  error: compactError(caught),
+                });
+              });
+          }),
+        );
       }
+      const primary = variants[0];
+      if (!primary) throw new Error("no playlist variants created");
 
       await convex.mutation(api.conversation.finishRequest, {
         requestId,
-        playlistId: playlist.id,
-        playlistUrl: playlist.url,
-        trackIds: selected.map((track) => track.spotifyTrackId),
+        playlistId: primary.playlist.id,
+        playlistUrl: primary.playlist.url,
+        trackIds: primary.selected.map((track) => track.spotifyTrackId),
+        playlistVariants: variants.map((variant) => ({
+          provider: variant.provider,
+          label: variant.label,
+          playlistId: variant.playlist.id,
+          playlistUrl: variant.playlist.url,
+          playlistName: variant.playlist.name,
+          trackIds: variant.selected.map((track) => track.spotifyTrackId),
+        })),
         now: Date.now(),
       });
 
@@ -2767,13 +2784,13 @@ export class RotationBot {
                 {
                   kind: "playlist_ready",
                   userText: args.prompt,
-                  playlistName: playlist.name,
-                  extra: plan.userFacingSummary,
+                  playlistName: primary.playlist.name,
+                  extra: primary.plan.userFacingSummary,
                   conversationHistory: args.conversationHistory,
                 },
-                `made ${playlist.name}. lmk what you think.`,
+                `made ${primary.playlist.name}. lmk what you think.`,
               ),
-              `made ${playlist.name}. lmk what you think.`,
+              `made ${primary.playlist.name}. lmk what you think.`,
               args.avoidReaction,
             );
       const latestUser =
@@ -2785,10 +2802,12 @@ export class RotationBot {
         (latestUser ? hasActiveSubscription(latestUser) : false);
 
       if (canDeliverNow) {
-        await this.sendPlaylistLink(space, user, playlist.url);
+        await sendLogged(space, user._id, reply);
+        await this.sendPlaylistVariants(space, user, variants, {
+          includeVotePoll: variants.length > 1,
+        });
         playlistLinkSent = true;
         if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
-        await sendLogged(space, user._id, reply);
         if (args.deferDeliveryUntilPaid) {
           await convex.mutation(api.conversation.markRequestDelivered, {
             requestId,
@@ -2905,6 +2924,110 @@ export class RotationBot {
     return tracks;
   }
 
+  private async createPlaylistVariant(args: {
+    provider: PlaylistAiProvider;
+    label: string;
+    user: Doc<"users">;
+    prompt: string;
+    requestKind: "initial" | "weekly" | "user";
+    pollAnswer?: string;
+    plan: PlaylistPlan;
+    context: MusicContext;
+    newOnly: boolean;
+    conversationHistory?: ConversationTurn[];
+  }): Promise<PlaylistVariantResult> {
+    const finalTargetCount = args.plan.targetCount;
+    const selectionPlan =
+      args.requestKind === "initial"
+        ? {
+            ...args.plan,
+            targetCount: Math.min(200, Math.max(args.plan.targetCount, 80)),
+          }
+        : args.plan;
+    const knownTrackIds = new Set(
+      args.context.tracks.map((track) => track.spotifyTrackId),
+    );
+    const openerQuery = explicitOpenerQuery(args.prompt);
+    const searchQueries = openerQuery
+      ? [
+          openerQuery,
+          ...args.plan.searchQueries.filter(
+            (query) => normalize(query) !== normalize(openerQuery),
+          ),
+        ]
+      : args.plan.searchQueries;
+    const rawCandidates = await this.spotify.searchTracks(
+      args.user._id,
+      searchQueries,
+      knownTrackIds,
+      Math.min(600, Math.max(240, selectionPlan.targetCount * 3)),
+    );
+    const candidates = args.newOnly
+      ? rankDiscoveryCandidates(rawCandidates)
+      : rawCandidates;
+    const familiarTracks = this.familiarTracks(
+      args.context.tracks,
+      args.plan.familiarTrackIds,
+    );
+    const familiarPercent = familiarMixPercent(args.pollAnswer);
+    const allowSameArtistTitleRepeats = allowsRepeatedSongVersions(args.prompt);
+    const selectedWithBuffer = finalizeSelectedTracks(
+      await this.selectTracks(
+        args.prompt,
+        selectionPlan,
+        candidates,
+        familiarTracks,
+        args.newOnly,
+        familiarPercent,
+        args.conversationHistory,
+        args.provider,
+      ),
+      [...args.context.tracks, ...candidates, ...familiarTracks],
+      openerQuery,
+    );
+    const selectedPool = args.newOnly
+      ? uniquePlaylistTracks(
+          [
+            ...filterKnownLibraryTracks(selectedWithBuffer, args.context.tracks),
+            ...filterKnownLibraryTracks(candidates, args.context.tracks),
+          ],
+          { allowSameArtistTitleRepeats },
+        )
+      : applyFamiliarMix({
+          selected: selectedWithBuffer,
+          candidates,
+          familiarTracks,
+          targetCount: finalTargetCount,
+          familiarPercent,
+          allowSameArtistTitleRepeats,
+        });
+    const selected =
+      args.requestKind === "initial"
+        ? enforcePlaylistDiversity(selectedPool, {
+            maxPerAlbum: 2,
+            maxPerArtist: 4,
+          }).slice(0, finalTargetCount)
+        : selectedPool.slice(0, finalTargetCount);
+
+    if (selected.length === 0) {
+      throw new Error(`no tracks selected for ${args.label}`);
+    }
+
+    const playlist = await this.spotify.createPlaylist(args.user, {
+      name: args.plan.playlistName,
+      description: args.plan.playlistDescription,
+      tracks: selected,
+    });
+
+    return {
+      provider: args.provider,
+      label: args.label,
+      plan: args.plan,
+      selected,
+      playlist,
+    };
+  }
+
   private familiarTracks(
     tracks: Doc<"spotifyTracks">[],
     preferredTrackIds: string[],
@@ -2949,6 +3072,7 @@ export class RotationBot {
     newOnly: boolean,
     familiarMixPercent?: number,
     conversationHistory?: ConversationTurn[],
+    provider: PlaylistAiProvider = "gemini",
   ) {
     const chosen = await this.ai.chooseTracks({
       prompt,
@@ -2958,6 +3082,7 @@ export class RotationBot {
       newOnly,
       familiarMixPercent,
       conversationHistory,
+      provider,
     });
     const byId = new Map<string, RotationTrack>();
     for (const track of (newOnly ? candidates : [...candidates, ...familiarTracks])) {
@@ -3064,7 +3189,8 @@ export class RotationBot {
       userId: user._id,
     });
 
-    if (!request?.playlistUrl) {
+    const variants = request ? this.requestPlaylistVariants(request) : [];
+    if (!request || variants.length === 0) {
       await sendLogged(
         space,
         user._id,
@@ -3089,7 +3215,7 @@ export class RotationBot {
       user._id,
       "resent it. if imessage drops the preview, it's also at the top of your spotify library.",
     );
-    await this.sendPlaylistLink(space, user, request.playlistUrl);
+    await this.sendPlaylistVariants(space, user, variants);
     if (!request.deliveredAt) {
       await convex.mutation(api.conversation.markRequestDelivered, {
         requestId: request._id,
@@ -3105,6 +3231,62 @@ export class RotationBot {
     } catch (caught) {
       console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
       await outbound(user._id, `playlist richlink send failed: ${url}`);
+    }
+  }
+
+  private requestPlaylistVariants(request: Doc<"recommendationRequests">) {
+    if (request.playlistVariants?.length) {
+      return request.playlistVariants.map((variant) => ({
+        label: variant.label,
+        playlist: {
+          name: variant.playlistName,
+          url: variant.playlistUrl,
+        },
+      }));
+    }
+    if (!request.playlistUrl) return [];
+    return [
+      {
+        label: "playlist",
+        playlist: {
+          name: "playlist",
+          url: request.playlistUrl,
+        },
+      },
+    ];
+  }
+
+  private async sendPlaylistVariants(
+    space: Space,
+    user: Doc<"users">,
+    variants: Array<{
+      label: string;
+      playlist: { name: string; url: string };
+    }>,
+    options: { includeVotePoll?: boolean } = {},
+  ) {
+    if (variants.length > 1) {
+      await sendLogged(space, user._id, "made two versions. vote after you listen.");
+    }
+    for (const [index, variant] of variants.entries()) {
+      if (variants.length > 1) {
+        await sendLogged(
+          space,
+          user._id,
+          `${ordinalLabel(index)}: ${variant.playlist.name}`,
+        );
+      }
+      await this.sendPlaylistLink(space, user, variant.playlist.url);
+    }
+    if (options.includeVotePoll && variants.length > 1) {
+      const voteOptions = playlistVoteOptions(
+        variants.map((variant) => variant.playlist.name),
+      );
+      await space.send(poll("which one did you like more?", voteOptions));
+      await outbound(
+        user._id,
+        `which one did you like more? ${voteOptions.join(" / ")}`,
+      );
     }
   }
 
@@ -3126,9 +3308,12 @@ export class RotationBot {
             userId: user._id,
           });
 
-    if (readyRequest?.playlistUrl) {
+    const variants = readyRequest ? this.requestPlaylistVariants(readyRequest) : [];
+    if (readyRequest && variants.length > 0) {
       await sendLogged(space, user._id, "your playlist is ready.");
-      await this.sendPlaylistLink(space, user, readyRequest.playlistUrl);
+      await this.sendPlaylistVariants(space, user, variants, {
+        includeVotePoll: variants.length > 1,
+      });
       await convex.mutation(api.conversation.markRequestDelivered, {
         requestId: readyRequest._id,
         now: Date.now(),

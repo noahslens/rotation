@@ -37,6 +37,7 @@ const hourMs = 60 * 60 * 1000;
 const weekMs = 7 * dayMs;
 const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
+const delayedProgressMs = 100 * 1000;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -49,7 +50,7 @@ const fallbackCopy = {
   greeting:
     "yo, i'm rotation. i'll make your spotify playlists over text, helping you find new music and rediscover old favs. i get better as i learn your taste over time.",
   linked:
-    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 1-2 mins.",
+    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 2-4 mins.",
   help:
     "ask for stuff like: “morning run”, “more like my liked songs”, “200 songs i’d fw”, or “gym but not corny”.",
   notLinked: "link spotify first and i can start cooking.",
@@ -357,6 +358,15 @@ export const formatPlaylistReadyReply = (
     normalizeReaction(avoidReaction),
   );
   return withoutDuplicateReaction || fallback;
+};
+
+const fallbackDelayedProgress =
+  "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
+
+export const formatDelayedProgressMessage = (message?: string) => {
+  const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
+  if (/\balmost done\b/i.test(base)) return base;
+  return `${base.replace(/[.!?]*$/, ".")} almost done.`;
 };
 
 export const tapbackFeedbackReply = (emoji: string) => {
@@ -2200,6 +2210,9 @@ export class RotationBot {
       now: Date.now(),
     });
 
+    let playlistLinkSent = false;
+    let delayedProgressTimer: ReturnType<typeof setTimeout> | undefined;
+
     try {
       const context = args.precomputedContext ?? (await this.freshMusicContext(user));
       const progressMessages = args.sendProgress
@@ -2207,7 +2220,7 @@ export class RotationBot {
             .tasteProgressMessages(context)
             .catch(() => [
               "your taste has a real point of view. i'm pulling from the strongest threads now.",
-              "there's a specific lane here. digging for songs that feel like they should already be in your likes.",
+              fallbackDelayedProgress,
             ])
         : [];
       if (args.sendProgress) {
@@ -2217,6 +2230,17 @@ export class RotationBot {
           progressMessages[0] ??
             "your taste has a real point of view. i'm pulling from the strongest threads now.",
         );
+        delayedProgressTimer = setTimeout(() => {
+          if (playlistLinkSent) return;
+          void sendLogged(
+            space,
+            user._id,
+            formatDelayedProgressMessage(progressMessages[1]),
+          ).catch((caught) => {
+            console.warn("[rotation.delayed_progress_failed]", compactError(caught));
+          });
+        }, delayedProgressMs);
+        delayedProgressTimer.unref?.();
       }
       const newOnly = shouldUseNewOnly(args);
       const rawPlan =
@@ -2234,14 +2258,6 @@ export class RotationBot {
         args.requestKind === "user"
           ? rawPlan
           : { ...rawPlan, targetCount: args.defaultCount };
-      if (args.sendProgress) {
-        await sendLogged(
-          space,
-          user._id,
-          progressMessages[1] ??
-            "there's a specific lane here. digging for songs that feel like they should already be in your likes.",
-        );
-      }
 
       if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length && !args.pollAnswer) {
         await convex.mutation(api.conversation.createPendingPoll, {
@@ -2360,6 +2376,8 @@ export class RotationBot {
 
       if (canDeliverNow) {
         await this.sendPlaylistLink(space, user, playlist.url);
+        playlistLinkSent = true;
+        if (delayedProgressTimer) clearTimeout(delayedProgressTimer);
         await sendLogged(space, user._id, reply);
         if (args.deferDeliveryUntilPaid) {
           await convex.mutation(api.conversation.markRequestDelivered, {
@@ -2382,6 +2400,8 @@ export class RotationBot {
         now: Date.now(),
       });
       throw caught;
+    } finally {
+      if (delayedProgressTimer) clearTimeout(delayedProgressTimer);
     }
   }
 

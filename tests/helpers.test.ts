@@ -412,6 +412,19 @@ test("playlist ready formatter removes inline links and repeated reaction emoji"
   );
 });
 
+test("delayed progress formatter says almost done once", async () => {
+  const { formatDelayedProgressMessage } = await import("../src/bot/rotationBot");
+
+  assert.equal(
+    formatDelayedProgressMessage("your garage-rock thread is weirdly locked in"),
+    "your garage-rock thread is weirdly locked in. almost done.",
+  );
+  assert.equal(
+    formatDelayedProgressMessage("already almost done."),
+    "already almost done.",
+  );
+});
+
 test("explicit opener is moved first without deduping same-title tracks", async () => {
   const { explicitOpenerQuery, finalizeSelectedTracks } = await import("../src/bot/rotationBot");
   const skyfall = {

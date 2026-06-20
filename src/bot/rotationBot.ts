@@ -41,7 +41,7 @@ type TextingAction = {
 
 const fallbackCopy = {
   greeting:
-    "yo, i'm rotation. i'll make your spotify playlists over text. whether it's finding you new music or helping you rediscover old favs in a pinch.",
+    "yo, i'm rotation. i'll make your spotify playlists over text and help you find new music. i get better as i learn your taste over time.",
   linked:
     "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 1-2 mins.",
   help:
@@ -277,6 +277,13 @@ const removeDuplicateReactionEmoji = (message: string | undefined, reaction?: st
   return stripped || undefined;
 };
 
+const removeInlineUrls = (message: string) =>
+  message
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\s+([,.!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+
 export const normalizeReaction = (reaction?: string | null) => {
   if (!reaction) return undefined;
   const trimmed = reaction.trim();
@@ -297,10 +304,7 @@ export const formatTextingAction = (
   action: TextingAction,
   fallbackMessage?: string,
 ): { reaction?: string; message?: string } => {
-  const reaction =
-    action.mode === "message_only" || action.mode === "none"
-      ? undefined
-      : normalizeReaction(action.reaction);
+  const reaction = action.mode === "none" ? undefined : normalizeReaction(action.reaction);
   const rawMessage =
     action.mode === "reaction_only" || action.mode === "none"
       ? undefined
@@ -310,6 +314,19 @@ export const formatTextingAction = (
     reaction,
   );
   return { reaction, message };
+};
+
+export const formatPlaylistReadyReply = (
+  reply: string,
+  fallback: string,
+  avoidReaction?: string | null,
+) => {
+  const withoutUrls = removeInlineUrls(reply) || fallback;
+  const withoutDuplicateReaction = removeDuplicateReactionEmoji(
+    withoutUrls,
+    normalizeReaction(avoidReaction),
+  );
+  return withoutDuplicateReaction || fallback;
 };
 
 export const tapbackFeedbackReply = (emoji: string) => {
@@ -384,7 +401,7 @@ const greetingPrefix = (text: string) => {
 };
 
 const greetingCopy = (text: string) =>
-  `${greetingPrefix(text)}, i'm rotation. i'll make your spotify playlists over text. whether it's finding you new music or helping you rediscover old favs in a pinch.`;
+  `${greetingPrefix(text)}, i'm rotation. i'll make your spotify playlists over text and help you find new music. i get better as i learn your taste over time.`;
 
 const escapeVCardValue = (value: string) =>
   value
@@ -826,6 +843,7 @@ export class RotationBot {
           precomputedPlan: playlistPlan,
           precomputedContext: context,
           conversationHistory,
+          avoidReaction: action.auxiliaryReaction,
         });
       });
     } catch (caught) {
@@ -1214,6 +1232,7 @@ export class RotationBot {
         intent: intent.intent,
         deferDeliveryUntilPaid: shouldGateForPayment,
         conversationHistory,
+        avoidReaction: intent.auxiliaryReaction,
       });
     });
   }
@@ -1301,7 +1320,7 @@ export class RotationBot {
       : "connect spotify here so i can get into it";
     await sendLogged(space, user._id, reply);
     await sendWithRetry(space, richlink(link));
-    await outbound(user._id, link);
+    await outbound(user._id, "sent spotify auth richlink");
   }
 
   private async maybeHandlePollAnswer(
@@ -1368,6 +1387,7 @@ export class RotationBot {
       precomputedPlan?: Awaited<ReturnType<RotationAi["playlistPlan"]>>;
       precomputedContext?: MusicContext;
       conversationHistory?: ConversationTurn[];
+      avoidReaction?: string | null;
     },
   ) {
     const requestId = await convex.mutation(api.conversation.createRequest, {
@@ -1491,15 +1511,19 @@ export class RotationBot {
         now: Date.now(),
       });
 
-      const reply = await this.safeReply(
-        {
-          kind: "playlist_ready",
-          userText: args.prompt,
-          playlistName: playlist.name,
-          extra: plan.userFacingSummary,
-          conversationHistory: args.conversationHistory,
-        },
+      const reply = formatPlaylistReadyReply(
+        await this.safeReply(
+          {
+            kind: "playlist_ready",
+            userText: args.prompt,
+            playlistName: playlist.name,
+            extra: plan.userFacingSummary,
+            conversationHistory: args.conversationHistory,
+          },
+          `made ${playlist.name}`,
+        ),
         `made ${playlist.name}`,
+        args.avoidReaction,
       );
       const latestUser =
         args.deferDeliveryUntilPaid && args.requestKind === "user"
@@ -1811,10 +1835,14 @@ export class RotationBot {
   private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
     try {
       await sendWithRetry(space, richlink(url));
-      await outbound(user._id, url);
+      await outbound(user._id, "sent playlist richlink");
     } catch (caught) {
       console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
-      await sendLogged(space, user._id, url);
+      await sendLogged(
+        space,
+        user._id,
+        "the spotify preview didn't send cleanly, but it's at the top of your spotify library. ask me to resend and i'll try again.",
+      );
     }
   }
 

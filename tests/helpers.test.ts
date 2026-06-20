@@ -178,7 +178,15 @@ test("texting action formatter supports reaction only, message only, and both", 
       reaction: "fire",
       message: "CHECK THIS https://Example.com/ABC",
     }),
-    { reaction: undefined, message: "check this https://Example.com/ABC" },
+    { reaction: "🔥", message: "check this https://Example.com/ABC" },
+  );
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "message_only",
+      reaction: "fire",
+      message: "🔥 checking now",
+    }),
+    { reaction: "🔥", message: "checking now" },
   );
   assert.deepEqual(
     formatTextingAction({
@@ -203,5 +211,18 @@ test("texting action formatter supports reaction only, message only, and both", 
       message: "🔥",
     }),
     { reaction: "🔥", message: undefined },
+  );
+});
+
+test("playlist ready formatter removes inline links and repeated reaction emoji", async () => {
+  const { formatPlaylistReadyReply } = await import("../src/bot/rotationBot");
+
+  assert.equal(
+    formatPlaylistReadyReply(
+      "made pool party 🔥 https://open.spotify.com/playlist/abc",
+      "made pool party",
+      "fire",
+    ),
+    "made pool party",
   );
 });

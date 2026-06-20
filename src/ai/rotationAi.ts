@@ -81,7 +81,7 @@ const intentSchema = z.object({
     "smalltalk",
   ]),
   confidence: z.number().min(0).max(1),
-  shortReason: z.string().max(120),
+  shortReason: z.string().max(500),
   auxiliaryReaction: z.string().max(24).nullable().optional(),
 });
 
@@ -438,10 +438,10 @@ ${conversationRules}
 ${deliveryFacts}
 you can send just a tapback/reaction, just a text message, both, or nothing.
 use reaction_only for thanks, compliments, agreement, laughter, or low-information nice messages that do not require a real reply.
-use message_only for questions, instructions, or anything needing content.
+use message_only for questions, instructions, or anything needing content. you may still include a reaction with message_only when it adds texture.
 use both when a quick reaction plus a short useful reply feels natural.
 reaction can be a single emoji or a tapback word like love, like, laugh, emphasize, question.
-when using both, do not put the same emoji in reaction and message.
+when including a reaction and a message, do not put the same emoji in the message.
 messages must be lowercase, compact, natural, and plain text only.
 when kind is pre_spotify_question, these are the only facts you should rely on:
 - rotation makes spotify playlists over text.

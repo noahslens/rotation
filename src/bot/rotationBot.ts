@@ -405,13 +405,18 @@ export class RotationBot {
     try {
       const context = await this.freshMusicContext(user._id);
       const newOnly = shouldUseNewOnly(args);
-      const plan = await this.ai.playlistPlan({
+      const rawPlan = await this.ai.playlistPlan({
         prompt: args.prompt,
         context,
         defaultCount: args.defaultCount,
         pollAnswer: args.pollAnswer,
         newOnly,
+        fixedTargetCount: args.requestKind !== "user",
       });
+      const plan =
+        args.requestKind === "user"
+          ? rawPlan
+          : { ...rawPlan, targetCount: args.defaultCount };
 
       if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length && !args.pollAnswer) {
         await convex.mutation(api.conversation.createPendingPoll, {
@@ -434,7 +439,6 @@ export class RotationBot {
         ...context.tracks.map((track) => track.spotifyTrackId),
         ...(await convex.query(api.spotify.getKnownTrackIds, {
           userId: user._id,
-          limit: 15_000,
         })),
       ]);
       const rawCandidates = await this.spotify.searchTracks(

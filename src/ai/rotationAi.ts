@@ -12,6 +12,14 @@ type MusicContext = {
 };
 
 const model = () => google(env.geminiModel);
+const providerOptions = {
+  google: {
+    thinkingConfig: {
+      thinkingLevel: "medium" as const,
+      includeThoughts: false,
+    },
+  },
+};
 
 const styleGuide = [
   "you are rotation, a music concierge that texts like a sharp friend.",
@@ -43,7 +51,7 @@ const playlistPlanSchema = z.object({
   pollOptions: z.array(z.string().max(40)).min(2).max(4).optional(),
   playlistName: z.string().min(1).max(80),
   playlistDescription: z.string().min(1).max(240),
-  targetCount: z.number().int().min(15).max(200),
+  targetCount: z.number().int().min(8).max(200),
   searchQueries: z.array(z.string().min(2).max(120)).min(4).max(40),
   familiarTrackIds: z.array(z.string()).max(25),
   vibe: z.string().max(160),
@@ -134,6 +142,7 @@ export class RotationAi {
     const result = await generateObject({
       model: model(),
       schema: intentSchema,
+      providerOptions,
       system: styleGuide,
       prompt: `classify this inbound text for a spotify playlist texting bot:\n\n${message}`,
     });
@@ -144,6 +153,7 @@ export class RotationAi {
     const result = await generateObject({
       model: model(),
       schema: firstNameSchema,
+      providerOptions,
       system: styleGuide,
       prompt: `extract the user's preferred first name from this reply. if they gave multiple words, choose the name they would expect us to use.\n\nreply: ${message}`,
     });
@@ -156,10 +166,12 @@ export class RotationAi {
     defaultCount: number;
     pollAnswer?: string;
     newOnly?: boolean;
+    fixedTargetCount?: boolean;
   }) {
     const result = await generateObject({
       model: model(),
       schema: playlistPlanSchema,
+      providerOptions,
       system: `${styleGuide}
 
 you choose music by using the user's spotify library context and spotify catalog search.
@@ -168,6 +180,11 @@ think deeply about patterns across the liked songs: recurring artists, microgenr
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
 otherwise make a confident call.
+silently decide the right playlist length. do not show reasoning.
+if countMode is fixed, set targetCount exactly to defaultTargetCount.
+if countMode is dynamic, set targetCount based on the user's prompt, explicit count, explicit time window, and activity.
+for dynamic counts: obey explicit requested song counts when present; if the user specifies a duration, estimate about 3 minutes per song; for quick walks/showers/short drives use 12-25 songs; for runs/gym/focus sessions use 35-80; for parties/road trips/deep discovery use 80-200.
+if countMode is dynamic and the prompt does not imply duration or scale, choose the smallest playlist that feels complete for the task instead of defaulting to 50.
 for new music/discovery, use saved songs, top tracks, and weighted playlist tracks as taste evidence only. the playlist itself must be music outside their known library.
 for new music/discovery, find layups they are likely to fall in love with: very close in taste, but not already liked and not obvious top hits they have probably heard.
 for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
@@ -179,6 +196,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
           userPrompt: args.prompt,
           pollAnswer: args.pollAnswer,
           defaultTargetCount: args.defaultCount,
+          countMode: args.fixedTargetCount ? "fixed" : "dynamic",
           noveltyMode: args.newOnly ? "new_music_only" : "balanced",
           musicContext: contextForModel(args.context),
         },
@@ -200,6 +218,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     const result = await generateObject({
       model: model(),
       schema: selectedTracksSchema,
+      providerOptions,
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
@@ -228,6 +247,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
     const result = await generateObject({
       model: model(),
       schema: tasteSummarySchema,
+      providerOptions,
       system: styleGuide,
       prompt: `summarize this user's music taste and infer activity preferences from playlist names. be concrete and compact.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
     });
@@ -253,6 +273,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
   }) {
     const result = await generateText({
       model: model(),
+      providerOptions,
       system: styleGuide,
       prompt: JSON.stringify(args),
     });

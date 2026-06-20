@@ -222,7 +222,7 @@ export const getMusicContext = query({
       .withIndex("by_user_source", (q) =>
         q.eq("userId", args.userId).eq("source", "saved"),
       )
-      .take(10_000);
+      .collect();
     const topTracks = await ctx.db
       .query("spotifyTracks")
       .withIndex("by_user_source", (q) =>
@@ -249,12 +249,13 @@ export const getMusicContext = query({
 });
 
 export const getKnownTrackIds = query({
-  args: { userId: v.id("users"), limit: v.number() },
+  args: { userId: v.id("users"), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const tracks = await ctx.db
+    const query = ctx.db
       .query("spotifyTracks")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .take(args.limit);
+      .withIndex("by_user", (q) => q.eq("userId", args.userId));
+    const tracks =
+      args.limit === undefined ? await query.collect() : await query.take(args.limit);
     return tracks.map((track) => track.spotifyTrackId);
   },
 });

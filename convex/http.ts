@@ -85,14 +85,32 @@ const spotifyTokenRequest = async (
     body,
   });
 
-  const payload = await response.json();
+  const payload = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    token_type?: string;
+    scope?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
   if (!response.ok) {
     throw new Error(
       `spotify token exchange failed: ${payload.error_description ?? payload.error ?? response.status}`,
     );
   }
 
-  return payload;
+  if (!payload.access_token || !payload.token_type || !payload.scope || !payload.expires_in) {
+    throw new Error("spotify token response was missing required fields");
+  }
+
+  return {
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token,
+    token_type: payload.token_type,
+    scope: payload.scope,
+    expires_in: payload.expires_in,
+  };
 };
 
 const spotifyProfile = async (
@@ -106,11 +124,23 @@ const spotifyProfile = async (
   const response = await fetch(`${spotifyApiBaseUrl}/me`, {
     headers: { authorization: `Bearer ${accessToken}` },
   });
-  const payload = await response.json();
+  const payload = (await response.json()) as {
+    id?: string;
+    display_name?: string;
+    email?: string;
+    country?: string;
+    error?: { message?: string };
+  };
   if (!response.ok) {
     throw new Error(`spotify profile fetch failed: ${payload.error?.message ?? response.status}`);
   }
-  return payload;
+  if (!payload.id) throw new Error("spotify profile response was missing id");
+  return {
+    id: payload.id,
+    display_name: payload.display_name,
+    email: payload.email,
+    country: payload.country,
+  };
 };
 
 const spotifyCallback = httpAction(async (ctx, request) => {

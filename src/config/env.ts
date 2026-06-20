@@ -17,6 +17,7 @@ export const env = {
   spotifyClientId: process.env.SPOTIFY_CLIENT_ID ?? "",
   spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? "",
   spotifyTokenEncryptionKey: process.env.SPOTIFY_TOKEN_ENCRYPTION_KEY ?? "",
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "",
   stripePaymentLink: process.env.STRIPE_PAYMENT_LINK ?? "",
   rotationPhone: process.env.ROTATION_PHONE ?? "+16282649071",
 };

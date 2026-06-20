@@ -4,7 +4,7 @@ import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { RotationAi } from "../ai/rotationAi";
 import { env } from "../config/env";
 import { api, convex } from "../state/convex";
-import { paywallText } from "../services/stripe";
+import { billingPortalText, paywallText } from "../services/stripe";
 import {
   type CandidateTrack,
   type RotationTrack,
@@ -370,7 +370,11 @@ export class RotationBot {
     }
 
     if (intent.intent === "billing") {
-      await sendLogged(space, user._id, paywallText(user._id));
+      const reply =
+        user.stripeCustomerId || hasActiveSubscription(user)
+          ? await billingPortalText(user)
+          : paywallText(user._id);
+      await sendLogged(space, user._id, reply);
       return;
     }
 

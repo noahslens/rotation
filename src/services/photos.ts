@@ -118,6 +118,9 @@ export const saveUserPhoto = async (input: {
 export const listUserPhotos = async (userId: Id<"users">) =>
   (await convex.query(api.photos.listForUser, { userId })) as SavedUserPhoto[];
 
+export const listUnusedUserPhotos = async (userId: Id<"users">) =>
+  (await convex.query(api.photos.listUnusedForUser, { userId })) as SavedUserPhoto[];
+
 export const fetchPhotoBytes = async (photo: SavedUserPhoto) => {
   if (!photo.url) throw new Error(`missing storage url for photo ${photo._id}`);
   const response = await fetch(photo.url);
@@ -155,10 +158,12 @@ export const spotifyCoverJpeg = async (bytes: Buffer) => {
 export const markPhotoUsed = async (
   photoId: Id<"userPhotos">,
   playlistId: string,
+  playlistName?: string,
 ) => {
   await convex.mutation(api.photos.markUsed, {
     photoId,
     playlistId,
+    playlistName,
     now: Date.now(),
   });
 };

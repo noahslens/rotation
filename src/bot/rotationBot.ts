@@ -15,7 +15,7 @@ import {
   type CoverPhotoCandidate,
   fetchPhotoBytes,
   isImageMime,
-  listUserPhotos,
+  listUnusedUserPhotos,
   markPhotoUsed,
   modelPhotoJpeg,
   saveUserPhoto,
@@ -2188,7 +2188,7 @@ export class RotationBot {
         await this.spotify
           .uploadPlaylistCover(user._id, playlist.id, cover.jpeg)
           .then(async () => {
-            await markPhotoUsed(cover.photoId, playlist.id);
+            await markPhotoUsed(cover.photoId, playlist.id, playlist.name);
           })
           .catch((caught) => {
             console.warn("[rotation.cover_upload_failed]", compactError(caught));
@@ -2409,7 +2409,7 @@ export class RotationBot {
     prompt: string,
     plan: Awaited<ReturnType<RotationAi["playlistPlan"]>>,
   ): Promise<{ photoId: Id<"userPhotos">; jpeg: Buffer } | null> {
-    const photos = await listUserPhotos(userId);
+    const photos = await listUnusedUserPhotos(userId);
     if (photos.length === 0) return null;
 
     const candidates: CoverPhotoCandidate[] = [];

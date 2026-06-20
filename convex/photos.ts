@@ -49,16 +49,41 @@ export const listForUser = query({
   },
 });
 
+export const listUnusedForUser = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const photos = await ctx.db
+      .query("userPhotos")
+      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .collect();
+    const unusedPhotos = photos.filter((photo) => photo.lastUsedAt === undefined);
+
+    return await Promise.all(
+      unusedPhotos.map(async (photo) => ({
+        ...photo,
+        url: await ctx.storage.getUrl(photo.storageId),
+      })),
+    );
+  },
+});
+
 export const markUsed = mutation({
   args: {
     photoId: v.id("userPhotos"),
     playlistId: v.string(),
+    playlistName: v.optional(v.string()),
     now: v.number(),
   },
   handler: async (ctx, args) => {
+    const playlistName = args.playlistName?.trim();
+    const lastUsedNote = playlistName
+      ? `used as playlist cover for "${playlistName}" (${args.playlistId})`
+      : `used as playlist cover for spotify playlist ${args.playlistId}`;
+
     await ctx.db.patch(args.photoId, {
       lastUsedForPlaylistId: args.playlistId,
       lastUsedAt: args.now,
+      lastUsedNote,
       updatedAt: args.now,
     });
   },

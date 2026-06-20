@@ -133,6 +133,7 @@ export default defineSchema({
     sourceMessageId: v.optional(v.string()),
     lastUsedForPlaylistId: v.optional(v.string()),
     lastUsedAt: v.optional(v.number()),
+    lastUsedNote: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

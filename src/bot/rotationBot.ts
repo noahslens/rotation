@@ -1457,7 +1457,7 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "make my first rotation: 75 new songs that fit my spotify taste. use my liked songs as taste evidence, but do not include songs i already have liked or saved. make it a wide cross-genre discovery mix, not one tight theme. go more niche and deeper-cut than obvious mainstream hits while still choosing high-confidence layups.",
+        "make my first rotation: 75 new songs that fit my spotify taste. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.",
       defaultCount: 75,
       requestKind: "initial",
       sendProgress,
@@ -2202,11 +2202,20 @@ export class RotationBot {
 
     try {
       const context = args.precomputedContext ?? (await this.freshMusicContext(user));
+      const progressMessages = args.sendProgress
+        ? await this.ai
+            .tasteProgressMessages(context)
+            .catch(() => [
+              "your taste has a real point of view. i'm pulling from the strongest threads now.",
+              "there's a specific lane here. digging for songs that feel like they should already be in your likes.",
+            ])
+        : [];
       if (args.sendProgress) {
         await sendLogged(
           space,
           user._id,
-          "your library's deep. taste is way more specific than the usual spotify boxes lol",
+          progressMessages[0] ??
+            "your taste has a real point of view. i'm pulling from the strongest threads now.",
         );
       }
       const newOnly = shouldUseNewOnly(args);
@@ -2229,7 +2238,8 @@ export class RotationBot {
         await sendLogged(
           space,
           user._id,
-          "there's a real lane here. digging for stuff that feels like it should already be in your likes.",
+          progressMessages[1] ??
+            "there's a specific lane here. digging for songs that feel like they should already be in your likes.",
         );
       }
 

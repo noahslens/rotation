@@ -128,6 +128,10 @@ const tasteSummarySchema = z.object({
   activityPreferences: z.record(z.string(), z.string()).optional(),
 });
 
+const tasteProgressSchema = z.object({
+  messages: z.array(z.string().min(12).max(180)).min(1).max(2),
+});
+
 const textingActionSchema = z.object({
   mode: z.enum(["reaction_only", "message_only", "both", "none"]),
   reaction: z.string().max(24).nullable().optional(),
@@ -322,6 +326,8 @@ do not average all history into one generic taste. filter the full history again
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
 for balanced/activity playlists, you may pull directly from the user's history when those songs fit the moment, or use the fitting songs as seeds to find adjacent new music.
 think deeply about patterns across the liked songs: recurring artists, microgenres, production texture, era, mood, tempo, vocal style, scenes, and adjacent songs similar in nature.
+for the first rotation / onboarding discovery playlist, do not pick songs the user merely might like. every selected song should feel almost certain to land based on repeated evidence in savedTracks and weighted playlist history.
+for the first rotation / onboarding discovery playlist, prefer fewer but stronger taste bets over speculative variety. cross-genre range is good only when each genre lane is clearly supported by their liked songs.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
 if recentConversation creates ambiguity, use needsPoll with options that separate the fresh interpretation from the carried-over interpretation, like london only vs sad london.
@@ -333,7 +339,7 @@ if countMode is dynamic, set targetCount based on the user's prompt, explicit co
 for dynamic counts: obey explicit requested song counts when present; if the user specifies a duration, estimate about 3 minutes per song; for quick walks/showers/short drives use 12-25 songs; for runs/gym/focus sessions use 35-80; for parties/road trips/deep discovery use 80-200.
 if countMode is dynamic and the prompt does not imply duration or scale, choose the smallest playlist that feels complete for the task instead of defaulting to 50.
 for new music/discovery, use saved songs, top tracks, and weighted playlist tracks as taste evidence only. the playlist itself must be music outside their known library.
-for new music/discovery, find layups they are likely to fall in love with: very close in taste, but not already liked and not obvious top hits they have probably heard.
+for new music/discovery, find layups they are almost certain to fall in love with: very close in taste, repeatedly supported by their saved tracks, but not already liked and not obvious top hits they have probably heard.
 for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
 for new music/discovery, search for adjacent artists, deeper cuts, scene/genre descriptors, label/era sounds, and artist combinations that strongly fit their taste.
 playlist owner/name matters: user-owned and personally named playlists are stronger taste evidence than spotify/editorial/charts/radio playlists.
@@ -376,6 +382,7 @@ ${conversationRules}
 selectedTrackIds is ordered playlist sequencing. the first id becomes track 1 in spotify.
 filter against the user's prompt first: a song that is in their history but wrong for the mood/activity should be ignored.
 if novelty mode is new_music_only, return only candidate track ids. use familiar tracks only as taste references, never as playlist picks.
+for new music/discovery, prioritize tracks that are almost certain to land with this user, not merely plausible. use repeated evidence from familiarTracks and the playlist plan before novelty.
 for new music/discovery, prioritize tracks that fit the user's taste but are less obvious: adjacent artists, deeper cuts, and non-super-mainstream songs. avoid huge hits unless explicitly requested.
 if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks from the user's history when they strongly fit the request.
 for balanced group/social playlists, include the strongest situation anchors before taste-only picks, and sequence the opener as the most context-perfect song available.
@@ -407,6 +414,23 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: `summarize this user's music taste and infer activity preferences from playlist names. be concrete and compact.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
     });
     return result.object;
+  }
+
+  async tasteProgressMessages(context: MusicContext) {
+    const result = await generateObject({
+      model: model(),
+      schema: tasteProgressSchema,
+      providerOptions,
+      system: `${styleGuide}
+
+write real, specific compliments about someone's music taste while rotation is building their first playlist.
+each message should feel like it was written after seeing their actual liked songs and playlists.
+mention concrete taste patterns, textures, scenes, eras, or artist clusters when they are evident.
+do not say "your library's deep", "spotify boxes", "vibe", "algorithm", "data", "import", or "model".
+do not overdo it. no fake flattery. one sentence per message.`,
+      prompt: `write 2 short progress messages, max 140 characters each, for this user's first rotation.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
+    });
+    return result.object.messages.map((message) => preserveUrlsLowercase(message));
   }
 
   async shortReply(args: {

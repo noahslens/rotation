@@ -227,6 +227,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_status_delete", ["status", "deleteAt"])
+    .index("by_user", ["userId"])
     .index("by_user_playlist", ["userId", "playlistId"])
     .index("by_request", ["requestId"]),
 

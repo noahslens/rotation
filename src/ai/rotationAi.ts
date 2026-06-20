@@ -482,8 +482,9 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
 
 write real, specific compliments about someone's music taste while rotation is building their first playlist.
 each message should feel like it was written after seeing their actual liked songs and user-owned playlist contents.
+the first message should feel fast and concrete. if the user has a huge savedTrackCount, it can simply react to that, or it can mention one surprising deep pull or clear artist/scene pattern.
 mention concrete taste patterns, textures, scenes, eras, or artist clusters when they are evident.
-do not say "your library's deep", "spotify boxes", "vibe", "algorithm", "data", "import", or "model".
+avoid generic music taste compliments. do not say "your library's deep", "spotify boxes", "vibe", "algorithm", "data", "import", or "model".
 do not overdo it. no fake flattery. one sentence per message.`,
       prompt: `write 2 short progress messages, max 140 characters each, for this user's first rotation.\n\n${JSON.stringify(contextForModel(context), null, 2)}`,
     });

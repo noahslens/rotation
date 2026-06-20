@@ -487,7 +487,8 @@ test("playlist ready formatter removes inline links and repeated reaction emoji"
 });
 
 test("delayed progress formatter says almost done once", async () => {
-  const { formatDelayedProgressMessage } = await import("../src/bot/rotationBot");
+  const { formatDelayedProgressMessage, formatReadySoonProgressMessage } =
+    await import("../src/bot/rotationBot");
 
   assert.equal(
     formatDelayedProgressMessage("your garage-rock thread is weirdly locked in"),
@@ -496,6 +497,14 @@ test("delayed progress formatter says almost done once", async () => {
   assert.equal(
     formatDelayedProgressMessage("already almost done."),
     "already almost done.",
+  );
+  assert.equal(
+    formatReadySoonProgressMessage("your garage-rock thread is weirdly locked in"),
+    "your garage-rock thread is weirdly locked in. it'll be ready soon.",
+  );
+  assert.equal(
+    formatReadySoonProgressMessage("still working. it'll be ready soon."),
+    "still working. it'll be ready soon.",
   );
 });
 

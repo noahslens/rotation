@@ -427,7 +427,6 @@ export const formatPlaylistReadyReply = (
 
 const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
-const initialProgressMessage = "starting with your liked songs now.";
 const readySoonProgressMessage = "still working. it'll be ready soon.";
 const playlistProviders = (): PlaylistAiProvider[] =>
   env.anthropicApiKey ? ["gemini", "sonnet"] : ["gemini"];
@@ -451,6 +450,12 @@ export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
   if (/\balmost done\b/i.test(base)) return base;
   return `${base.replace(/[.!?]*$/, ".")} almost done.`;
+};
+
+export const formatReadySoonProgressMessage = (message?: string) => {
+  const base = preserveUrlsLowercase(message?.trim() || readySoonProgressMessage);
+  if (/\bready soon\b/i.test(base)) return base;
+  return `${base.replace(/[.!?]*$/, ".")} it'll be ready soon.`;
 };
 
 export const photoUploadAck = (args: {
@@ -2638,21 +2643,37 @@ export class RotationBot {
     let readySoonProgressTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
+      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
       if (args.sendProgress) {
-        await sendLogged(space, user._id, initialProgressMessage);
+        const progressMessagesPromise = this.ai
+          .tasteProgressMessages(context)
+          .catch((caught) => {
+            console.warn("[rotation.progress_messages_failed]", compactError(caught));
+            return [];
+          });
+        void progressMessagesPromise.then(async (messages) => {
+          if (playlistLinkSent || !messages[0]) return;
+          await sendLogged(space, user._id, messages[0]).catch((caught) => {
+            console.warn("[rotation.initial_progress_failed]", compactError(caught));
+          });
+        });
         readySoonProgressTimer = setTimeout(() => {
           if (playlistLinkSent) return;
-          void sendLogged(
-            space,
-            user._id,
-            readySoonProgressMessage,
-          ).catch((caught) => {
-            console.warn("[rotation.delayed_progress_failed]", compactError(caught));
-          });
+          void progressMessagesPromise
+            .then(async (messages) => {
+              if (playlistLinkSent) return;
+              await sendLogged(
+                space,
+                user._id,
+                formatReadySoonProgressMessage(messages[1]),
+              );
+            })
+            .catch((caught) => {
+              console.warn("[rotation.delayed_progress_failed]", compactError(caught));
+            });
         }, readySoonProgressMs);
         readySoonProgressTimer.unref?.();
       }
-      const context = args.precomputedContext ?? (await this.freshMusicContext(user));
       const newOnly = shouldUseNewOnly(args);
       const providerPlans = await Promise.all(
         playlistProviders().map(async (provider) => {
@@ -2802,12 +2823,12 @@ export class RotationBot {
         (latestUser ? hasActiveSubscription(latestUser) : false);
 
       if (canDeliverNow) {
+        playlistLinkSent = true;
+        if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
         await sendLogged(space, user._id, reply);
         await this.sendPlaylistVariants(space, user, variants, {
           includeVotePoll: variants.length > 1,
         });
-        playlistLinkSent = true;
-        if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
         if (args.deferDeliveryUntilPaid) {
           await convex.mutation(api.conversation.markRequestDelivered, {
             requestId,

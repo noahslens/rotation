@@ -126,12 +126,31 @@ type SpotifyTokenPayload = {
   error_description?: string;
 };
 
+type SpotifyProfilePayload = {
+  id?: string;
+  display_name?: string;
+  email?: string;
+  country?: string;
+  error?: { message?: string } | string;
+  error_description?: string;
+};
+
 class SpotifyTokenError extends Error {
   status: number;
 
   constructor(message: string, status: number) {
     super(message);
     this.name = "SpotifyTokenError";
+    this.status = status;
+  }
+}
+
+class SpotifyApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SpotifyApiError";
     this.status = status;
   }
 }
@@ -159,6 +178,15 @@ const parseSpotifyTokenPayload = (text: string) => {
   }
 };
 
+const parseSpotifyProfilePayload = (text: string) => {
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as SpotifyProfilePayload;
+  } catch {
+    return { error_description: text.trim() };
+  }
+};
+
 const spotifyTokenErrorMessage = (
   payload: SpotifyTokenPayload,
   status: number,
@@ -166,6 +194,18 @@ const spotifyTokenErrorMessage = (
   payload.error_description ??
   payload.error ??
   (status === 429 ? "too many requests" : String(status));
+
+const spotifyProfileErrorMessage = (
+  payload: SpotifyProfilePayload,
+  status: number,
+) => {
+  if (typeof payload.error === "string") return payload.error;
+  return (
+    payload.error_description ??
+    payload.error?.message ??
+    (status === 429 ? "too many requests" : String(status))
+  );
+};
 
 const spotifyTokenRequest = async (
   body: URLSearchParams,
@@ -236,26 +276,38 @@ const spotifyProfile = async (
   email?: string;
   country?: string;
 }> => {
-  const response = await fetch(`${spotifyApiBaseUrl}/me`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  const payload = (await response.json()) as {
-    id?: string;
-    display_name?: string;
-    email?: string;
-    country?: string;
-    error?: { message?: string };
-  };
-  if (!response.ok) {
-    throw new Error(`spotify profile fetch failed: ${payload.error?.message ?? response.status}`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(`${spotifyApiBaseUrl}/me`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const payload = parseSpotifyProfilePayload(await response.text());
+
+    if (response.ok) {
+      if (!payload.id) throw new Error("spotify profile response was missing id");
+      return {
+        id: payload.id,
+        display_name: payload.display_name,
+        email: payload.email,
+        country: payload.country,
+      };
+    }
+
+    const canRetry =
+      attempt < 2 &&
+      (response.status === 429 || [500, 502, 503, 504].includes(response.status));
+    if (canRetry) {
+      const retryAfter = parseRetryAfterMs(response.headers.get("retry-after"));
+      await wait(Math.min(retryAfter ?? 1000 * (attempt + 1), 5000));
+      continue;
+    }
+
+    throw new SpotifyApiError(
+      `spotify profile fetch failed: ${spotifyProfileErrorMessage(payload, response.status)}`,
+      response.status,
+    );
   }
-  if (!payload.id) throw new Error("spotify profile response was missing id");
-  return {
-    id: payload.id,
-    display_name: payload.display_name,
-    email: payload.email,
-    country: payload.country,
-  };
+
+  throw new Error("spotify profile fetch failed");
 };
 
 const spotifyCallback = httpAction(async (ctx, request) => {
@@ -340,12 +392,19 @@ const spotifyCallback = httpAction(async (ctx, request) => {
       now,
     });
     const isRateLimited =
-      caught instanceof SpotifyTokenError && caught.status === 429;
+      (caught instanceof SpotifyTokenError || caught instanceof SpotifyApiError) &&
+      caught.status === 429;
+    const needsSpotifyAppAccess =
+      caught instanceof SpotifyApiError &&
+      caught.status === 403 &&
+      /developer dashboard|not registered|allowlist|user access/i.test(message);
     return html(
       isRateLimited
         ? "<h1>spotify is busy</h1><p>wait a minute, then text rotation and ask for a fresh spotify link.</p>"
+        : needsSpotifyAppAccess
+          ? "<h1>spotify app access needed</h1><p>this spotify account is not added to rotation’s spotify app users yet. add it in the spotify developer dashboard, then text rotation for a fresh link.</p>"
         : "<h1>link failed</h1><p>text rotation and ask for a fresh spotify link.</p>",
-      isRateLimited ? 429 : 500,
+      isRateLimited ? 429 : needsSpotifyAppAccess ? 403 : 500,
     );
   }
 });

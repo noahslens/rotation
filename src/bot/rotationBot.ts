@@ -213,6 +213,17 @@ const preserveUrlsLowercase = (text: string) => {
     .replace(/__url_(\d+)__/g, (_, index: string) => urls[Number(index)] ?? "");
 };
 
+const removeDuplicateReactionEmoji = (message: string | undefined, reaction?: string) => {
+  if (!message || !reaction || !emojiOnlyPattern.test(reaction)) return message;
+  const stripped = message
+    .split(reaction)
+    .join("")
+    .replace(/\s+([,.!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped || undefined;
+};
+
 export const normalizeReaction = (reaction?: string | null) => {
   if (!reaction) return undefined;
   const trimmed = reaction.trim();
@@ -241,7 +252,10 @@ export const formatTextingAction = (
     action.mode === "reaction_only" || action.mode === "none"
       ? undefined
       : action.message?.trim() || fallbackMessage;
-  const message = rawMessage ? preserveUrlsLowercase(rawMessage) : undefined;
+  const message = removeDuplicateReactionEmoji(
+    rawMessage ? preserveUrlsLowercase(rawMessage) : undefined,
+    reaction,
+  );
   return { reaction, message };
 };
 

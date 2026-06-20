@@ -120,4 +120,20 @@ test("texting action formatter supports reaction only, message only, and both", 
     }),
     { reaction: "🏋️", message: "on it" },
   );
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "both",
+      reaction: "fire",
+      message: "🔥 on it",
+    }),
+    { reaction: "🔥", message: "on it" },
+  );
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "both",
+      reaction: "fire",
+      message: "🔥",
+    }),
+    { reaction: "🔥", message: undefined },
+  );
 });

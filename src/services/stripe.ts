@@ -22,12 +22,12 @@ export const paywallText = (
   const devCardNote =
     "dev note: enter 4242 4242 4242 4242 as your card number, and any exp + cvv.";
   if (!link) {
-    return "quick thing: rotation is $29.99/y. stripe link isn't configured yet.";
+    return "rotation is $29.99/y, but the stripe link isn't configured yet.";
   }
   if (options.buildingPlaylist) {
-    return `quick thing: rotation is $29.99/y. lock it in here: ${link}\n\n${devCardNote}\n\ni'm making this now - it'll be ready by the time you're done.`;
+    return `rotation is $29.99/y. lock it in and i'll make that playlist next.\n\n${devCardNote}`;
   }
-  return `quick thing: rotation is $29.99/y. lock it in here: ${link}\n\n${devCardNote}`;
+  return `rotation is $29.99/y. lock it in and i'll keep making playlists over text.\n\n${devCardNote}`;
 };
 
 export const billingPortalText = async (user: Doc<"users">) => {

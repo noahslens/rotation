@@ -10,7 +10,11 @@ import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { RotationAi, type ConversationTurn } from "../ai/rotationAi";
 import { env } from "../config/env";
 import { api, convex } from "../state/convex";
-import { billingPortalText, paywallText } from "../services/stripe";
+import {
+  billingPortalText,
+  paymentLinkForUser,
+  paywallText,
+} from "../services/stripe";
 import {
   type CoverPhotoCandidate,
   fetchPhotoBytes,
@@ -386,6 +390,11 @@ const sendLogged = async (space: Space, userId: Id<"users">, text: string) => {
 
 export const playlistLinkContent = (url: string) => richlink(url);
 
+export const stripePaymentLinkContent = (userId: string) => {
+  const link = paymentLinkForUser(userId);
+  return link ? richlink(link) : undefined;
+};
+
 const compactError = (caught: unknown) =>
   caught instanceof Error ? caught.message : String(caught);
 
@@ -420,6 +429,11 @@ export const playlistEditIntent = (text: string) => {
     /\b(tweak|edit|change|adjust|update|rename|add|remove|delete|replace|swap|move|reorder|shorten|extend)\b/.test(
       clean,
     );
+  const moreTracksEdit =
+    /\b(?:\d+\s+)?more\s+(songs?|tracks?|cuts?)\b/.test(clean) ||
+    /\b(?:add|throw|toss|put)\b.{0,24}\b(?:\d+\s+)?(?:more\s+)?(songs?|tracks?|cuts?)\b/.test(
+      clean,
+    );
   const moreLikeRequest =
     /\b(more|songs|stuff|music|playlist)\b.{0,32}\blike\b/.test(clean) ||
     /\blike\b.{0,48}\b(this|that|it|playlist|link|one)\b/.test(clean);
@@ -430,11 +444,14 @@ export const playlistEditIntent = (text: string) => {
 
   const editVerb =
     mutatingVerb ||
+    moreTracksEdit ||
     /\b(make shorter|make longer)\b/.test(clean) ||
     /\bmake (it|that|this|the playlist|this playlist|that playlist)\b.{0,24}\b(more|less)\b/.test(
       clean,
     );
   if (!editVerb) return false;
+
+  if (moreTracksEdit) return true;
 
   const directPlaylistRef =
     /\b(playlist|mix|rotation)\b/.test(clean) ||
@@ -1068,12 +1085,12 @@ export class RotationBot {
       }
 
       if (action.intent === "billing") {
-        const reply =
-          user.stripeCustomerId || hasActiveSubscription(user)
-            ? await billingPortalText(user)
-            : paywallText(user._id);
         await this.withTyping(space, async () => {
-          await sendLogged(space, user._id, reply);
+          if (user.stripeCustomerId || hasActiveSubscription(user)) {
+            await sendLogged(space, user._id, await billingPortalText(user));
+          } else {
+            await this.sendPaywall(space, user);
+          }
         });
         return;
       }
@@ -1109,11 +1126,7 @@ export class RotationBot {
         Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
       if (shouldGateForPayment) {
         await this.withTyping(space, async () => {
-          await sendLogged(
-            space,
-            user._id,
-            paywallText(user._id, { buildingPlaylist: true }),
-          );
+          await this.sendPaywall(space, user, { buildingPlaylist: true });
         });
         await convex.mutation(api.users.markPaywallShown, {
           userId: user._id,
@@ -1289,13 +1302,31 @@ export class RotationBot {
     await space.startTyping().catch((caught) => {
       console.warn("[rotation.typing_start_failed]", compactError(caught));
     });
+    const keepAlive = setInterval(() => {
+      space.startTyping().catch((caught) => {
+        console.warn("[rotation.typing_keepalive_failed]", compactError(caught));
+      });
+    }, 8000);
     try {
       return await fn();
     } finally {
+      clearInterval(keepAlive);
       await space.stopTyping().catch((caught) => {
         console.warn("[rotation.typing_stop_failed]", compactError(caught));
       });
     }
+  }
+
+  private async sendPaywall(
+    space: Space,
+    user: Doc<"users">,
+    options: { buildingPlaylist?: boolean } = {},
+  ) {
+    await sendLogged(space, user._id, paywallText(user._id, options));
+    const paymentLink = stripePaymentLinkContent(user._id);
+    if (!paymentLink) return;
+    await sendWithRetry(space, paymentLink);
+    await outbound(user._id, "sent stripe payment richlink");
   }
 
   private async recentConversation(userId: Id<"users">): Promise<ConversationTurn[]> {
@@ -1356,8 +1387,8 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "make my first rotation: 50 new songs that fit my spotify taste. use my liked songs as taste evidence, but do not include songs i already have liked or saved. make it high-confidence layups, not obvious mainstream hits.",
-      defaultCount: 50,
+        "make my first rotation: 75 new songs that fit my spotify taste. use my liked songs as taste evidence, but do not include songs i already have liked or saved. make it a wide cross-genre discovery mix, not one tight theme. go more niche and deeper-cut than obvious mainstream hits while still choosing high-confidence layups.",
+      defaultCount: 75,
       requestKind: "initial",
       sendProgress,
     });
@@ -1367,7 +1398,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      "now let's build a custom playlist. text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i'll make it.";
+      "that first one is 75 songs. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i'll make it.";
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,
@@ -1456,6 +1487,15 @@ export class RotationBot {
       return;
     }
 
+    const pollAnswerHandled = await this.maybeHandlePollAnswer(
+      space,
+      user,
+      text,
+      sourceMessage,
+      conversationHistory,
+    );
+    if (pollAnswerHandled) return;
+
     const autoDelete = playlistAutoDeleteRequest(text);
     if (autoDelete) {
       await this.withTyping(space, async () => {
@@ -1470,15 +1510,6 @@ export class RotationBot {
       });
       return;
     }
-
-    const pollAnswerHandled = await this.maybeHandlePollAnswer(
-      space,
-      user,
-      text,
-      sourceMessage,
-      conversationHistory,
-    );
-    if (pollAnswerHandled) return;
 
     const intent = await this.ai.classify({
       message: text,
@@ -1504,12 +1535,12 @@ export class RotationBot {
     }
 
     if (intent.intent === "billing") {
-      const reply =
-        user.stripeCustomerId || hasActiveSubscription(user)
-          ? await billingPortalText(user)
-          : paywallText(user._id);
       await this.withTyping(space, async () => {
-        await sendLogged(space, user._id, reply);
+        if (user.stripeCustomerId || hasActiveSubscription(user)) {
+          await sendLogged(space, user._id, await billingPortalText(user));
+        } else {
+          await this.sendPaywall(space, user);
+        }
       });
       return;
     }
@@ -1555,11 +1586,7 @@ export class RotationBot {
       Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
     if (shouldGateForPayment) {
       await this.withTyping(space, async () => {
-        await sendLogged(
-          space,
-          user._id,
-          paywallText(user._id, { buildingPlaylist: true }),
-        );
+        await this.sendPaywall(space, user, { buildingPlaylist: true });
       });
       await convex.mutation(api.users.markPaywallShown, {
         userId: user._id,
@@ -1702,8 +1729,22 @@ export class RotationBot {
       now: Date.now(),
     });
 
+    const resolvedPrompt = `${openPoll.originalPrompt} ${selectedOption}`;
+    if (playlistEditIntent(openPoll.originalPrompt) || playlistEditIntent(resolvedPrompt)) {
+      await this.withTyping(space, async () => {
+        await this.editExistingPlaylist(
+          space,
+          user,
+          resolvedPrompt,
+          sourceMessage,
+          conversationHistory,
+        );
+      });
+      return true;
+    }
+
     const workingReaction = playlistWorkingReaction(
-      `${openPoll.originalPrompt} ${selectedOption}`,
+      resolvedPrompt,
       "activity_playlist",
     );
     await this.tapback(sourceMessage, workingReaction, user._id);
@@ -1790,7 +1831,7 @@ export class RotationBot {
     const shouldGateForPayment =
       Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
     if (shouldGateForPayment) {
-      await sendLogged(space, user._id, paywallText(user._id, { buildingPlaylist: true }));
+      await this.sendPaywall(space, user, { buildingPlaylist: true });
       await convex.mutation(api.users.markPaywallShown, {
         userId: user._id,
         now: Date.now(),
@@ -1835,8 +1876,17 @@ export class RotationBot {
       });
 
       if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length) {
-        await sendLogged(
-          space,
+        await convex.mutation(api.conversation.createPendingPoll, {
+          userId: user._id,
+          originalPrompt: text,
+          deliveryMode: "immediate",
+          question: plan.pollQuestion,
+          options: plan.pollOptions,
+          expiresAt: Date.now() + 30 * 60 * 1000,
+          now: Date.now(),
+        });
+        await space.send(poll(plan.pollQuestion, plan.pollOptions));
+        await outbound(
           user._id,
           `${plan.pollQuestion} ${plan.pollOptions.join(" / ")}`,
         );
@@ -2473,7 +2523,7 @@ export class RotationBot {
 
   private async maybeSendPaywall(space: Space, user: Doc<"users">) {
     if (!user.hasSeenPaywall && user.completedRequestCount === 0) {
-      await sendLogged(space, user._id, paywallText(user._id));
+      await this.sendPaywall(space, user);
       await convex.mutation(api.users.markPaywallShown, {
         userId: user._id,
         now: Date.now(),
@@ -2502,7 +2552,7 @@ export class RotationBot {
     const isPaidUndelivered =
       request.deliveryMode === "after_payment" && !request.deliveredAt;
     if (isPaidUndelivered && !hasActiveSubscription(user)) {
-      await sendLogged(space, user._id, paywallText(user._id, { buildingPlaylist: true }));
+      await this.sendPaywall(space, user, { buildingPlaylist: true });
       await convex.mutation(api.users.markPaywallShown, {
         userId: user._id,
         now: Date.now(),

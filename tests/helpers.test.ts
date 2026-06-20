@@ -40,9 +40,23 @@ test("paywall text includes stripe test card dev note", async () => {
   const text = paywallText("user_123", { buildingPlaylist: true });
 
   assert.match(text, /\$29\.99\/y/);
+  assert.match(text, /i'll make that playlist next/);
   assert.match(text, /4242 4242 4242 4242/);
   assert.match(text, /any exp \+ cvv/);
-  assert.match(text, /ready by the time you're done/);
+  assert.equal(text.includes("https://"), false);
+  assert.equal(text.includes("ready by the time"), false);
+});
+
+test("stripe payment links use richlinks instead of inline urls", async () => {
+  const { stripePaymentLinkContent } = await import("../src/bot/rotationBot");
+  const built = await (
+    stripePaymentLinkContent("user_123") as {
+      build: () => Promise<{ type: string; url: string }>;
+    }
+  ).build();
+
+  assert.equal(built.type, "richlink");
+  assert.equal(built.url, "https://buy.stripe.com/test_abc123?client_reference_id=user_123");
 });
 
 test("spotify auth requests playlist cover upload permission", async () => {
@@ -90,6 +104,8 @@ test("playlist edit detector handles edits without stealing more-like requests",
 
   assert.equal(playlistEditIntent("add more future to it"), true);
   assert.equal(playlistEditIntent("add 10 more songs to that playlist"), true);
+  assert.equal(playlistEditIntent("add 20 more songs pls"), true);
+  assert.equal(playlistEditIntent("30 more songs pls"), true);
   assert.equal(playlistEditIntent("remove skyfall from that playlist"), true);
   assert.equal(playlistEditIntent("make it more upbeat"), true);
   assert.equal(

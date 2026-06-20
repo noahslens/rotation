@@ -126,12 +126,18 @@ export const saveProfile = mutation({
     now: v.number(),
   },
   handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    const spotifyFirstName = args.spotifyDisplayName?.trim().split(/\s+/)[0];
     await ctx.db.patch(args.userId, {
       spotifyLinked: true,
       spotifyUserId: args.spotifyUserId,
       spotifyDisplayName: args.spotifyDisplayName,
       spotifyEmail: args.spotifyEmail,
       defaultMarket: args.defaultMarket,
+      preferredName:
+        !user?.preferredName || user.preferredName.toLowerCase() === "friend"
+          ? spotifyFirstName
+          : user.preferredName,
       onboardingStage: "linked",
       updatedAt: args.now,
     });

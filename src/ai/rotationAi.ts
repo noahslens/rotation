@@ -44,10 +44,10 @@ const playlistPlanSchema = z.object({
   playlistName: z.string().min(1).max(80),
   playlistDescription: z.string().min(1).max(240),
   targetCount: z.number().int().min(15).max(200),
-  searchQueries: z.array(z.string().min(2).max(120)).min(8).max(40),
+  searchQueries: z.array(z.string().min(2).max(120)).min(4).max(40),
   familiarTrackIds: z.array(z.string()).max(25),
   vibe: z.string().max(160),
-  userFacingSummary: z.string().min(1).max(180),
+  userFacingSummary: z.string().min(1).max(320),
 });
 
 const selectedTracksSchema = z.object({

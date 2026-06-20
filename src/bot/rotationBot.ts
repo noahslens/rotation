@@ -923,6 +923,7 @@ const resolvePollOption = (text: string, options: string[]) => {
 const hasFreshSync = (user: Doc<"users"> | null, context: MusicContext) =>
   Boolean(
     user?.lastSpotifySyncAt &&
+      (!user.spotifyLinked || Boolean(user.spotifyUserId)) &&
       Date.now() - user.lastSpotifySyncAt < dayMs &&
       context.tracks.length > 40,
   );
@@ -2900,7 +2901,7 @@ export class RotationBot {
     let context = await this.fullMusicContext(userId);
     let spotifyUserId = context.user?.spotifyUserId ?? user.spotifyUserId;
     if (user.spotifyLinked && !spotifyUserId) {
-      spotifyUserId = await this.refreshSpotifyProfile(userId);
+      void this.refreshSpotifyProfile(userId);
     }
     if (!hasFreshSync(context.user, context)) {
       console.info("[rotation.context] syncing spotify library", {

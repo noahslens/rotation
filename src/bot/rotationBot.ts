@@ -26,6 +26,8 @@ const fallbackCopy = {
   error: "my bad, something broke on my side. try that again in a sec.",
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const isTextMessage = (
   message: Message,
 ): message is Message & { content: { type: "text"; text: string } } =>
@@ -40,8 +42,26 @@ const outbound = async (userId: Id<"users">, text: string) => {
   });
 };
 
+const sendWithRetry = async (space: Space, text: string) => {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await space.send(text);
+      return;
+    } catch (caught) {
+      lastError = caught;
+      console.warn("[rotation.send_retry]", {
+        attempt,
+        error: compactError(caught),
+      });
+      await sleep(750 * attempt);
+    }
+  }
+  throw lastError;
+};
+
 const sendLogged = async (space: Space, userId: Id<"users">, text: string) => {
-  await space.send(text);
+  await sendWithRetry(space, text);
   await outbound(userId, text);
 };
 
@@ -120,16 +140,22 @@ export class RotationBot {
     });
 
     try {
-      await space.startTyping();
+      await space.startTyping().catch((caught) => {
+        console.warn("[rotation.typing_start_failed]", compactError(caught));
+      });
       try {
         await this.route(space, user, message.content.text);
       } finally {
-        await space.stopTyping();
+        await space.stopTyping().catch((caught) => {
+          console.warn("[rotation.typing_stop_failed]", compactError(caught));
+        });
       }
     } catch (caught) {
       await this.recordFailure("message_handler", user._id, { text: message.content.text }, caught);
       console.error("[rotation.error]", caught);
-      await sendLogged(space, user._id, fallbackCopy.error);
+      await sendLogged(space, user._id, fallbackCopy.error).catch((sendError) => {
+        console.error("[rotation.fallback_send_failed]", sendError);
+      });
     }
   }
 
@@ -251,7 +277,9 @@ export class RotationBot {
       fallbackCopy.greeting,
     );
     await sendLogged(space, user._id, greeting);
-    await space.send(nativeContactCard());
+    await space.send(nativeContactCard()).catch((caught) => {
+      console.warn("[rotation.contact_card_failed]", compactError(caught));
+    });
     await convex.mutation(api.users.setOnboardingStage, {
       userId: user._id,
       onboardingStage: "asked_name",

@@ -204,3 +204,125 @@ export const recordPlaybackCheck = mutation({
     });
   },
 });
+
+export const resetByPlatformUser = mutation({
+  args: {
+    platform: v.string(),
+    platformUserId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_platform_user", (q) =>
+        q.eq("platform", args.platform).eq("platformUserId", args.platformUserId),
+      )
+      .unique();
+
+    if (!user) {
+      return {
+        reset: false,
+        deleted: {},
+      };
+    }
+
+    const userId = user._id;
+    const deleted: Record<string, number> = {};
+
+    const bump = (table: string) => {
+      deleted[table] = (deleted[table] ?? 0) + 1;
+    };
+
+    for (const doc of await ctx.db
+      .query("spotifyAuthStates")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("spotifyAuthStates");
+    }
+
+    for (const doc of await ctx.db
+      .query("spotifyTokens")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("spotifyTokens");
+    }
+
+    for (const doc of await ctx.db
+      .query("spotifyPlaylists")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("spotifyPlaylists");
+    }
+
+    for (const doc of await ctx.db
+      .query("spotifyTracks")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("spotifyTracks");
+    }
+
+    for (const doc of await ctx.db
+      .query("conversationTurns")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("conversationTurns");
+    }
+
+    for (const status of ["open", "answered", "expired"] as const) {
+      for (const doc of await ctx.db
+        .query("pendingPolls")
+        .withIndex("by_user_status", (q) =>
+          q.eq("userId", userId).eq("status", status),
+        )
+        .collect()) {
+        await ctx.db.delete(doc._id);
+        bump("pendingPolls");
+      }
+    }
+
+    for (const doc of await ctx.db
+      .query("recommendationRequests")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("recommendationRequests");
+    }
+
+    for (const doc of await ctx.db
+      .query("listeningSessions")
+      .withIndex("by_user_context", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("listeningSessions");
+    }
+
+    for (const doc of await ctx.db
+      .query("billingEvents")
+      .filter((q) => q.eq(q.field("userId"), userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("billingEvents");
+    }
+
+    for (const doc of await ctx.db
+      .query("jobFailures")
+      .filter((q) => q.eq(q.field("userId"), userId))
+      .collect()) {
+      await ctx.db.delete(doc._id);
+      bump("jobFailures");
+    }
+
+    await ctx.db.delete(userId);
+    bump("users");
+
+    return {
+      reset: true,
+      userId,
+      deleted,
+    };
+  },
+});

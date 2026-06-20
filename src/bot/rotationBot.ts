@@ -210,6 +210,10 @@ export class RotationBot {
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
     if (!user.spotifyLinked || user.initialPlaylistDeliveredAt) return;
+    console.info("[rotation.initial] start", {
+      userId: user._id,
+      initialPlaylistStartedAt: user.initialPlaylistStartedAt,
+    });
     if (!user.initialPlaylistStartedAt) {
       await sendLogged(space, user._id, fallbackCopy.linked);
       await convex.mutation(api.users.markInitialPlaylistStarted, {
@@ -227,6 +231,7 @@ export class RotationBot {
       userId: user._id,
       now: Date.now(),
     });
+    console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
       "how it works: text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i’ll make the playlist.";
     await sendLogged(space, user._id, explainer);
@@ -403,7 +408,7 @@ export class RotationBot {
     });
 
     try {
-      const context = await this.freshMusicContext(user._id);
+      const context = await this.freshMusicContext(user);
       const newOnly = shouldUseNewOnly(args);
       const rawPlan = await this.ai.playlistPlan({
         prompt: args.prompt,
@@ -435,12 +440,9 @@ export class RotationBot {
         return;
       }
 
-      const knownTrackIds = new Set([
-        ...context.tracks.map((track) => track.spotifyTrackId),
-        ...(await convex.query(api.spotify.getKnownTrackIds, {
-          userId: user._id,
-        })),
-      ]);
+      const knownTrackIds = new Set(
+        context.tracks.map((track) => track.spotifyTrackId),
+      );
       const rawCandidates = await this.spotify.searchTracks(
         user._id,
         plan.searchQueries,
@@ -504,14 +506,27 @@ export class RotationBot {
     }
   }
 
-  private async freshMusicContext(userId: Id<"users">) {
-    let context = await convex.query(api.spotify.getMusicContext, { userId });
+  private async freshMusicContext(user: Doc<"users">) {
+    const userId = user._id;
+    let context = await this.fullMusicContext(userId);
     if (!hasFreshSync(context.user, context)) {
-      await this.spotify.syncUserLibrary(userId);
-      context = await convex.query(api.spotify.getMusicContext, { userId });
+      console.info("[rotation.context] syncing spotify library", {
+        userId,
+        existingTracks: context.tracks.length,
+      });
+      await this.spotify.syncUserLibrary(userId, user.spotifyUserId);
+      context = await this.fullMusicContext(userId);
+      console.info("[rotation.context] spotify sync loaded", {
+        userId,
+        tracks: context.tracks.length,
+      });
     }
 
     if (context.user && (!context.user.tasteSummary || !context.user.activityPreferencesJson)) {
+      console.info("[rotation.context] summarizing taste", {
+        userId,
+        tracks: context.tracks.length,
+      });
       const summary = await this.ai.summarizeTaste(context);
       await convex.mutation(api.users.updateTasteSummary, {
         userId,
@@ -521,10 +536,54 @@ export class RotationBot {
           : undefined,
         now: Date.now(),
       });
-      context = await convex.query(api.spotify.getMusicContext, { userId });
+      context = await this.fullMusicContext(userId);
     }
 
     return context;
+  }
+
+  private async fullMusicContext(userId: Id<"users">): Promise<MusicContext> {
+    const context = await convex.query(api.spotify.getMusicContext, { userId });
+    const savedTracks = await this.fetchTracksBySource(userId, "saved");
+    const otherTracks = context.tracks.filter((track) => track.source !== "saved");
+    return {
+      ...context,
+      tracks: uniqueById([...savedTracks, ...otherTracks]),
+    };
+  }
+
+  private async fetchTracksBySource(
+    userId: Id<"users">,
+    source: RotationTrack["source"],
+  ) {
+    const tracks: Doc<"spotifyTracks">[] = [];
+    let cursor: string | null = null;
+
+    do {
+      const page: {
+        page: Doc<"spotifyTracks">[];
+        isDone: boolean;
+        continueCursor: string;
+      } = await convex.query(api.spotify.getTracksBySourcePage, {
+        userId,
+        source,
+        paginationOpts: {
+          numItems: 1_000,
+          cursor,
+        },
+      });
+      tracks.push(...page.page);
+      cursor = page.isDone ? null : page.continueCursor;
+    } while (cursor);
+
+    if (tracks.length) {
+      console.info("[rotation.context] fetched source tracks", {
+        userId,
+        source,
+        count: tracks.length,
+      });
+    }
+    return tracks;
   }
 
   private familiarTracks(

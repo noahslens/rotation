@@ -4,6 +4,13 @@ import { api, convex } from "../state/convex";
 import type { RotationApp, RotationBot } from "./rotationBot";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) =>
+  await Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
 
 const dmForUser = async (app: RotationApp, user: Doc<"users">) => {
   if (user.platform !== "iMessage") return null;
@@ -32,8 +39,23 @@ export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
     while (running) {
       await run("initial", async () => {
         const users = await convex.query(api.users.listLinkedUsers, { limit: 50 });
-        for (const user of users.filter((item) => !item.initialPlaylistDeliveredAt)) {
-          const space = await dmForUser(app, user);
+        const pending = users.filter((item) => !item.initialPlaylistDeliveredAt);
+        if (pending.length) {
+          console.info("[background:initial] pending users", {
+            count: pending.length,
+            userIds: pending.map((user) => user._id),
+          });
+        }
+        for (const user of pending) {
+          console.info("[background:initial] creating dm", {
+            userId: user._id,
+            platformUserId: user.platformUserId,
+          });
+          const space = await withTimeout(dmForUser(app, user), 15_000, "dmForUser");
+          console.info("[background:initial] delivering", {
+            userId: user._id,
+            hasSpace: Boolean(space),
+          });
           if (space) await bot.deliverInitialPlaylist(space, user);
         }
       });

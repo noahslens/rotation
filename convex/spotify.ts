@@ -1,5 +1,14 @@
 import { mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
+
+const sourceArg = v.union(
+  v.literal("saved"),
+  v.literal("playlist"),
+  v.literal("top"),
+  v.literal("recommendation"),
+  v.literal("created"),
+);
 
 const trackArg = v.object({
   spotifyTrackId: v.string(),
@@ -12,13 +21,7 @@ const trackArg = v.object({
   durationMs: v.optional(v.number()),
   explicit: v.optional(v.boolean()),
   previewUrl: v.optional(v.string()),
-  source: v.union(
-    v.literal("saved"),
-    v.literal("playlist"),
-    v.literal("top"),
-    v.literal("recommendation"),
-    v.literal("created"),
-  ),
+  source: sourceArg,
   playlistIds: v.optional(v.array(v.string())),
 });
 
@@ -150,6 +153,7 @@ export const saveSnapshot = mutation({
     userId: v.id("users"),
     playlists: v.array(playlistArg),
     tracks: v.array(trackArg),
+    markSynced: v.optional(v.boolean()),
     now: v.number(),
   },
   handler: async (ctx, args) => {
@@ -202,10 +206,12 @@ export const saveSnapshot = mutation({
       }
     }
 
-    await ctx.db.patch(args.userId, {
-      lastSpotifySyncAt: args.now,
-      updatedAt: args.now,
-    });
+    if (args.markSynced ?? true) {
+      await ctx.db.patch(args.userId, {
+        lastSpotifySyncAt: args.now,
+        updatedAt: args.now,
+      });
+    }
   },
 });
 
@@ -222,7 +228,7 @@ export const getMusicContext = query({
       .withIndex("by_user_source", (q) =>
         q.eq("userId", args.userId).eq("source", "saved"),
       )
-      .collect();
+      .take(0);
     const topTracks = await ctx.db
       .query("spotifyTracks")
       .withIndex("by_user_source", (q) =>
@@ -248,14 +254,29 @@ export const getMusicContext = query({
   },
 });
 
+export const getTracksBySourcePage = query({
+  args: {
+    userId: v.id("users"),
+    source: sourceArg,
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("spotifyTracks")
+      .withIndex("by_user_source", (q) =>
+        q.eq("userId", args.userId).eq("source", args.source),
+      )
+      .paginate(args.paginationOpts);
+  },
+});
+
 export const getKnownTrackIds = query({
   args: { userId: v.id("users"), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const query = ctx.db
       .query("spotifyTracks")
       .withIndex("by_user", (q) => q.eq("userId", args.userId));
-    const tracks =
-      args.limit === undefined ? await query.collect() : await query.take(args.limit);
+    const tracks = await query.take(args.limit ?? 4_000);
     return tracks.map((track) => track.spotifyTrackId);
   },
 });

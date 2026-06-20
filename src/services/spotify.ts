@@ -7,6 +7,9 @@ const accountsBaseUrl = "https://accounts.spotify.com";
 const apiBaseUrl = "https://api.spotify.com/v1";
 const refreshSkewMs = 90_000;
 const maxPlaylistTracksForTaste = 120;
+const snapshotTrackBatchSize = 400;
+const spotifyPageConcurrency = 8;
+const spotifyRequestTimeoutMs = 20_000;
 
 export const spotifyScopes = [
   "user-read-email",
@@ -82,6 +85,10 @@ type Page<T> = {
   next: string | null;
 };
 
+type TotalPage<T> = Page<T> & {
+  total?: number;
+};
+
 const compactDescription = (value: string | null | undefined) => {
   if (!value) return undefined;
   const withoutTags = value.replace(/<[^>]+>/g, "").trim();
@@ -143,35 +150,83 @@ export class SpotifyService {
     return url.toString();
   }
 
-  async syncUserLibrary(userId: Id<"users">) {
-    const user = await convex.query(api.users.getById, { userId });
+  async syncUserLibrary(userId: Id<"users">, spotifyUserId?: string) {
+    console.info("[spotify.sync] start", { userId });
     const [playlists, savedTracks, topTracks] = await Promise.all([
       this.getPlaylists(userId),
       this.getSavedTracks(userId),
       this.getTopTracks(userId),
     ]);
+    console.info("[spotify.sync] fetched library", {
+      userId,
+      playlists: playlists.length,
+      savedTracks: savedTracks.length,
+      topTracks: topTracks.length,
+    });
 
     const playlistTracks = await this.getTracksFromPlaylists(
       userId,
-      this.weightPlaylistsForTaste(playlists, user?.spotifyUserId).slice(0, 40),
+      this.weightPlaylistsForTaste(playlists, spotifyUserId).slice(0, 40),
     );
     const tracks = dedupeTracks([...savedTracks, ...topTracks, ...playlistTracks]);
+    console.info("[spotify.sync] fetched playlist tracks", {
+      userId,
+      playlistTracks: playlistTracks.length,
+      dedupedTracks: tracks.length,
+    });
+
+    const playlistSnapshot = playlists.map((playlist) => ({
+      spotifyPlaylistId: playlist.id,
+      name: playlist.name,
+      description: compactDescription(playlist.description),
+      ownerId: playlist.owner?.id,
+      ownerName: playlist.owner?.display_name,
+      trackCount: playlist.tracks?.total ?? 0,
+      snapshotId: playlist.snapshot_id,
+      public: playlist.public,
+      externalUrl: playlist.external_urls?.spotify,
+    }));
 
     await convex.mutation(api.spotify.saveSnapshot, {
       userId,
-      playlists: playlists.map((playlist) => ({
-        spotifyPlaylistId: playlist.id,
-        name: playlist.name,
-        description: compactDescription(playlist.description),
-        ownerId: playlist.owner?.id,
-        ownerName: playlist.owner?.display_name,
-        trackCount: playlist.tracks?.total ?? 0,
-        snapshotId: playlist.snapshot_id,
-        public: playlist.public,
-        externalUrl: playlist.external_urls?.spotify,
-      })),
-      tracks,
+      playlists: playlistSnapshot,
+      tracks: [],
+      markSynced: false,
       now: Date.now(),
+    });
+
+    for (let index = 0; index < tracks.length; index += snapshotTrackBatchSize) {
+      console.info("[spotify.sync] saving track batch", {
+        userId,
+        from: index,
+        to: Math.min(index + snapshotTrackBatchSize, tracks.length),
+        total: tracks.length,
+      });
+      await convex.mutation(api.spotify.saveSnapshot, {
+        userId,
+        playlists: [],
+        tracks: tracks.slice(index, index + snapshotTrackBatchSize),
+        markSynced: index + snapshotTrackBatchSize >= tracks.length,
+        now: Date.now(),
+      });
+    }
+
+    if (tracks.length === 0) {
+      await convex.mutation(api.spotify.saveSnapshot, {
+        userId,
+        playlists: [],
+        tracks: [],
+        markSynced: true,
+        now: Date.now(),
+      });
+    }
+
+    console.info("[spotify.sync] complete", {
+      userId,
+      playlists: playlists.length,
+      savedTracks: savedTracks.length,
+      playlistTracks: playlistTracks.length,
+      tracks: tracks.length,
     });
 
     return {
@@ -289,10 +344,38 @@ export class SpotifyService {
   }
 
   private async getSavedTracks(userId: Id<"users">) {
-    const items = await this.paginate<{ track?: SpotifyTrack }>(
+    const first = await this.request<TotalPage<{ track?: SpotifyTrack }>>(
       userId,
-      "/me/tracks?limit=50",
+      "/me/tracks?limit=50&offset=0",
     );
+    const total = first.total ?? first.items.length;
+    const offsets: number[] = [];
+    for (let offset = 50; offset < total; offset += 50) {
+      offsets.push(offset);
+    }
+    console.info("[spotify.sync] fetching saved track pages", {
+      userId,
+      total,
+      pages: offsets.length + 1,
+      concurrency: spotifyPageConcurrency,
+    });
+
+    const pages = await this.mapConcurrent(
+      offsets,
+      spotifyPageConcurrency,
+      async (offset) =>
+        await this.request<TotalPage<{ track?: SpotifyTrack }>>(
+          userId,
+          `/me/tracks?limit=50&offset=${offset}`,
+        ),
+    );
+    const items = [first, ...pages].flatMap((page) => page.items ?? []);
+    console.info("[spotify.sync] fetched saved tracks", {
+      userId,
+      total,
+      items: items.length,
+    });
+
     return items
       .map((item) => mapTrack(item.track, "saved"))
       .filter((track): track is RotationTrack => Boolean(track));
@@ -377,6 +460,26 @@ export class SpotifyService {
     return maxItems ? items.slice(0, maxItems) : items;
   }
 
+  private async mapConcurrent<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>,
+  ) {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(concurrency, items.length);
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (nextIndex < items.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          results[index] = await fn(items[index] as T, index);
+        }
+      }),
+    );
+    return results;
+  }
+
   private async request<T>(
     userId: Id<"users">,
     pathOrUrl: string,
@@ -384,24 +487,53 @@ export class SpotifyService {
     allowEmpty = false,
   ): Promise<T> {
     const token = await this.accessToken(userId);
-    const response = await fetch(
-      pathOrUrl.startsWith("http") ? pathOrUrl : `${apiBaseUrl}${pathOrUrl}`,
-      {
-        ...init,
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-          ...init.headers,
-        },
-      },
-    );
+    const method = (init.method ?? "GET").toUpperCase();
+    const maxAttempts = method === "GET" ? 3 : 1;
+    const url = pathOrUrl.startsWith("http") ? pathOrUrl : `${apiBaseUrl}${pathOrUrl}`;
 
-    if (allowEmpty && response.status === 204) return null as T;
-    if (!response.ok) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), spotifyRequestTimeoutMs);
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            ...init.headers,
+          },
+        });
+      } catch (caught) {
+        clearTimeout(timeout);
+        if (attempt < maxAttempts && method === "GET") {
+          await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+          continue;
+        }
+        throw caught;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (allowEmpty && response.status === 204) return null as T;
+      if (response.ok) return (await response.json()) as T;
+
       const body = await response.text();
+      const retryable = [429, 500, 502, 503, 504].includes(response.status);
+      if (attempt < maxAttempts && retryable) {
+        const retryAfter = Number(response.headers.get("retry-after"));
+        const delayMs = Number.isFinite(retryAfter)
+          ? retryAfter * 1000
+          : 800 * attempt;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+
       throw new Error(`spotify api ${response.status}: ${body}`);
     }
-    return (await response.json()) as T;
+
+    throw new Error("spotify api request failed");
   }
 
   private async accessToken(userId: Id<"users">) {

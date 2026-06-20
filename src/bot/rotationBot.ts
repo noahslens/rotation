@@ -1,6 +1,5 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
 import {
-  Emoji,
   attachment,
   contact,
   poll,
@@ -22,6 +21,11 @@ const dayMs = 24 * 60 * 60 * 1000;
 const weekMs = 7 * dayMs;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
+type TextingAction = {
+  mode?: "reaction_only" | "message_only" | "both" | "none";
+  reaction?: string | null;
+  message?: string | null;
+};
 
 const fallbackCopy = {
   greeting:
@@ -48,11 +52,112 @@ type ReactionMessage = Message & {
 const isReactionMessage = (message: Message): message is ReactionMessage =>
   message.content.type === "reaction";
 
+const tapbacks = {
+  love: "❤️",
+  like: "👍",
+  dislike: "👎",
+  laugh: "😂",
+  emphasize: "‼️",
+  question: "❓",
+} as const;
+
+const reactionAliases: Record<string, string> = {
+  love: tapbacks.love,
+  heart: tapbacks.love,
+  hearts: tapbacks.love,
+  red_heart: tapbacks.love,
+  redheart: tapbacks.love,
+  thanks: tapbacks.love,
+  thank_you: tapbacks.love,
+  like: tapbacks.like,
+  thumbs_up: tapbacks.like,
+  thumbsup: tapbacks.like,
+  yes: tapbacks.like,
+  agree: tapbacks.like,
+  dislike: tapbacks.dislike,
+  thumbs_down: tapbacks.dislike,
+  thumbsdown: tapbacks.dislike,
+  no: tapbacks.dislike,
+  laugh: tapbacks.laugh,
+  lol: tapbacks.laugh,
+  lmao: tapbacks.laugh,
+  haha: tapbacks.laugh,
+  emphasize: tapbacks.emphasize,
+  exclaim: tapbacks.emphasize,
+  bangbang: tapbacks.emphasize,
+  "!!": tapbacks.emphasize,
+  question: tapbacks.question,
+  "?": tapbacks.question,
+  running: "🏃",
+  run: "🏃",
+  jog: "🏃",
+  gym: "🏋️",
+  lift: "🏋️",
+  workout: "🏋️",
+  focus: "🔒",
+  lock_in: "🔒",
+  lockin: "🔒",
+  coding: "💻",
+  code: "💻",
+  fire: "🔥",
+  hype: "🔥",
+  music: "🎧",
+  headphones: "🎧",
+  sparkles: "✨",
+};
+
+const emojiOnlyPattern = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\u200d\ufe0f]+$/u;
+
+const preserveUrlsLowercase = (text: string) => {
+  const urls: string[] = [];
+  const placeholderText = text.replace(/https?:\/\/\S+/g, (url) => {
+    urls.push(url);
+    return `__url_${urls.length - 1}__`;
+  });
+  return placeholderText
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/__url_(\d+)__/g, (_, index: string) => urls[Number(index)] ?? "");
+};
+
+export const normalizeReaction = (reaction?: string | null) => {
+  if (!reaction) return undefined;
+  const trimmed = reaction.trim();
+  if (!trimmed) return undefined;
+  const directTapback = Object.values(tapbacks).find((tapback) => tapback === trimmed);
+  if (directTapback) return directTapback;
+
+  const alias = trimmed
+    .toLowerCase()
+    .replace(/^:+|:+$/g, "")
+    .replace(/[\s-]+/g, "_");
+  if (reactionAliases[alias]) return reactionAliases[alias];
+  if (trimmed.length <= 12 && emojiOnlyPattern.test(trimmed)) return trimmed;
+  return undefined;
+};
+
+export const formatTextingAction = (
+  action: TextingAction,
+  fallbackMessage?: string,
+): { reaction?: string; message?: string } => {
+  const reaction =
+    action.mode === "message_only" || action.mode === "none"
+      ? undefined
+      : normalizeReaction(action.reaction);
+  const rawMessage =
+    action.mode === "reaction_only" || action.mode === "none"
+      ? undefined
+      : action.message?.trim() || fallbackMessage;
+  const message = rawMessage ? preserveUrlsLowercase(rawMessage) : undefined;
+  return { reaction, message };
+};
+
 export const tapbackFeedbackReply = (emoji: string) => {
   switch (emoji) {
-    case Emoji.dislike:
+    case tapbacks.dislike:
       return "noted - tell me what missed and i'll tune the next one.";
-    case Emoji.question:
+    case tapbacks.question:
       return "what should i clarify?";
     default:
       return undefined;
@@ -289,17 +394,7 @@ export class RotationBot {
       await message.read().catch((caught) => {
         console.warn("[rotation.read_failed]", compactError(caught));
       });
-      await this.tapback(message, Emoji.like);
-      await space.startTyping().catch((caught) => {
-        console.warn("[rotation.typing_start_failed]", compactError(caught));
-      });
-      try {
-        await this.route(space, user, message.content.text);
-      } finally {
-        await space.stopTyping().catch((caught) => {
-          console.warn("[rotation.typing_stop_failed]", compactError(caught));
-        });
-      }
+      await this.route(space, user, message.content.text, message);
     } catch (caught) {
       await this.recordFailure("message_handler", user._id, { text: message.content.text }, caught);
       console.error("[rotation.error]", caught);
@@ -336,10 +431,63 @@ export class RotationBot {
     if (reply) await sendLogged(space, user._id, reply);
   }
 
-  private async tapback(message: Message, emoji: string) {
-    await message.react(emoji).catch((caught) => {
+  private async tapback(
+    message: Message,
+    reaction?: string | null,
+    userId?: Id<"users">,
+  ) {
+    const emoji = normalizeReaction(reaction);
+    if (!emoji) return false;
+    try {
+      await message.react(emoji);
+      if (userId) await outbound(userId, `tapback ${emoji}`);
+      return true;
+    } catch (caught) {
       console.warn("[rotation.tapback_failed]", compactError(caught));
+      return false;
+    }
+  }
+
+  private async withTyping<T>(space: Space, fn: () => Promise<T>) {
+    await space.startTyping().catch((caught) => {
+      console.warn("[rotation.typing_start_failed]", compactError(caught));
     });
+    try {
+      return await fn();
+    } finally {
+      await space.stopTyping().catch((caught) => {
+        console.warn("[rotation.typing_stop_failed]", compactError(caught));
+      });
+    }
+  }
+
+  private async applyTextingAction(
+    space: Space,
+    user: Doc<"users">,
+    sourceMessage: Message,
+    action: TextingAction,
+    options?: { fallbackMessage?: string; requireResponse?: boolean },
+  ) {
+    const formatted = formatTextingAction(action, options?.fallbackMessage);
+    let didSomething = false;
+    if (formatted.reaction) {
+      didSomething =
+        (await this.tapback(sourceMessage, formatted.reaction, user._id)) ||
+        didSomething;
+    }
+    if (formatted.message) {
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, formatted.message as string);
+      });
+      didSomething = true;
+    }
+    if (!didSomething && options?.requireResponse && options.fallbackMessage) {
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, options.fallbackMessage as string);
+      });
+      didSomething = true;
+    }
+    return didSomething;
   }
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
@@ -412,31 +560,57 @@ export class RotationBot {
     });
   }
 
-  private async route(space: Space, user: Doc<"users">, text: string) {
+  private async route(
+    space: Space,
+    user: Doc<"users">,
+    text: string,
+    sourceMessage: Message,
+  ) {
     if (user.onboardingStage === "new") {
-      await this.sendGreeting(space, user, text);
+      await this.withTyping(space, async () => {
+        await this.sendGreeting(space, user, text);
+      });
       return;
     }
 
     if (!user.spotifyLinked) {
-      await this.handlePreSpotify(space, user, text);
+      await this.handlePreSpotify(space, user, text, sourceMessage);
       return;
     }
 
     if (!user.initialPlaylistDeliveredAt) {
-      await this.deliverInitialPlaylist(space, user);
+      await this.withTyping(space, async () => {
+        await this.deliverInitialPlaylist(space, user);
+      });
       const latest = await convex.query(api.users.getById, { userId: user._id });
       if (!latest) return;
       user = latest;
     }
 
-    const pollAnswerHandled = await this.maybeHandlePollAnswer(space, user, text);
+    const pollAnswerHandled = await this.maybeHandlePollAnswer(
+      space,
+      user,
+      text,
+      sourceMessage,
+    );
     if (pollAnswerHandled) return;
 
     const intent = await this.ai.classify(text);
     if (intent.intent === "help") {
-      const reply = await this.safeReply({ kind: "help", userText: text }, fallbackCopy.help);
-      await sendLogged(space, user._id, reply);
+      const action = await this.ai
+        .textingAction({
+          kind: "help",
+          userText: text,
+          fallbackMessage: fallbackCopy.help,
+        })
+        .catch(() => ({
+          mode: "message_only" as const,
+          message: fallbackCopy.help,
+        }));
+      await this.applyTextingAction(space, user, sourceMessage, action, {
+        fallbackMessage: fallbackCopy.help,
+        requireResponse: true,
+      });
       return;
     }
 
@@ -445,39 +619,57 @@ export class RotationBot {
         user.stripeCustomerId || hasActiveSubscription(user)
           ? await billingPortalText(user)
           : paywallText(user._id);
-      await sendLogged(space, user._id, reply);
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, reply);
+      });
       return;
     }
 
     if (intent.intent === "smalltalk" && intent.confidence > 0.78) {
-      const reply = await this.safeReply({
-        kind: "smalltalk",
-        userText: text,
-      }, "i'm here. send me a vibe and i'll make the playlist.");
-      await sendLogged(space, user._id, reply);
+      const fallbackMessage =
+        "i'm here. send me a vibe and i'll make the playlist.";
+      const action = await this.ai
+        .textingAction({
+          kind: "smalltalk",
+          userText: text,
+          fallbackMessage,
+        })
+        .catch(() => ({
+          mode: "message_only" as const,
+          message: fallbackMessage,
+        }));
+      await this.applyTextingAction(space, user, sourceMessage, action, {
+        fallbackMessage,
+      });
       return;
     }
+
+    await this.tapback(sourceMessage, intent.auxiliaryReaction, user._id);
 
     const shouldGateForPayment =
       Boolean(user.initialPlaylistDeliveredAt) && !hasActiveSubscription(user);
     if (shouldGateForPayment) {
-      await sendLogged(
-        space,
-        user._id,
-        paywallText(user._id, { buildingPlaylist: true }),
-      );
+      await this.withTyping(space, async () => {
+        await sendLogged(
+          space,
+          user._id,
+          paywallText(user._id, { buildingPlaylist: true }),
+        );
+      });
       await convex.mutation(api.users.markPaywallShown, {
         userId: user._id,
         now: Date.now(),
       });
     }
 
-    await this.createPlaylistFromPrompt(space, user, {
-      prompt: text,
-      defaultCount: 50,
-      requestKind: "user",
-      intent: intent.intent,
-      deferDeliveryUntilPaid: shouldGateForPayment,
+    await this.withTyping(space, async () => {
+      await this.createPlaylistFromPrompt(space, user, {
+        prompt: text,
+        defaultCount: 50,
+        requestKind: "user",
+        intent: intent.intent,
+        deferDeliveryUntilPaid: shouldGateForPayment,
+      });
     });
   }
 
@@ -507,19 +699,44 @@ export class RotationBot {
     await this.sendSpotifyLink(space, user);
   }
 
-  private async handlePreSpotify(space: Space, user: Doc<"users">, text: string) {
+  private async handlePreSpotify(
+    space: Space,
+    user: Doc<"users">,
+    text: string,
+    sourceMessage: Message,
+  ) {
     if (wantsSpotifyLink(text)) {
-      await this.sendSpotifyLink(space, user);
+      await this.withTyping(space, async () => {
+        await this.sendSpotifyLink(space, user);
+      });
       return;
     }
 
-    const reply = await this.ai
-      .preSpotifyReply(text)
-      .catch(
-        () =>
+    const action = await this.ai
+      .textingAction({
+        kind: "pre_spotify_question",
+        userText: text,
+        fallbackMessage:
           "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
-      );
-    await sendLogged(space, user._id, reply);
+      })
+      .catch(() => undefined);
+    const formatted = action ? formatTextingAction(action) : {};
+    if (formatted.reaction) {
+      await this.tapback(sourceMessage, formatted.reaction, user._id);
+    }
+    if (action?.mode === "reaction_only" || action?.mode === "none") return;
+
+    const reply =
+      formatted.message ??
+      (await this.ai
+        .preSpotifyReply(text)
+        .catch(
+          () =>
+            "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
+        ));
+    await this.withTyping(space, async () => {
+      await sendLogged(space, user._id, reply);
+    });
   }
 
   private async sendSpotifyLink(space: Space, user: Doc<"users">, name?: string) {
@@ -536,6 +753,7 @@ export class RotationBot {
     space: Space,
     user: Doc<"users">,
     text: string,
+    sourceMessage: Message,
   ) {
     const openPoll = await convex.query(api.conversation.getOpenPoll, {
       userId: user._id,
@@ -553,7 +771,9 @@ export class RotationBot {
         },
         `pick one: ${openPoll.options.map((option, index) => `${index + 1}. ${option}`).join(" / ")}`,
       );
-      await sendLogged(space, user._id, reply);
+      await this.withTyping(space, async () => {
+        await sendLogged(space, user._id, reply);
+      });
       return true;
     }
 
@@ -563,12 +783,15 @@ export class RotationBot {
       now: Date.now(),
     });
 
-    await this.createPlaylistFromPrompt(space, user, {
-      prompt: openPoll.originalPrompt,
-      pollAnswer: selectedOption,
-      defaultCount: 50,
-      requestKind: "user",
-      deferDeliveryUntilPaid: openPoll.deliveryMode === "after_payment",
+    await this.tapback(sourceMessage, "like", user._id);
+    await this.withTyping(space, async () => {
+      await this.createPlaylistFromPrompt(space, user, {
+        prompt: openPoll.originalPrompt,
+        pollAnswer: selectedOption,
+        defaultCount: 50,
+        requestKind: "user",
+        deferDeliveryUntilPaid: openPoll.deliveryMode === "after_payment",
+      });
     });
     return true;
   }

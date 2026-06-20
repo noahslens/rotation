@@ -43,6 +43,7 @@ const intentSchema = z.object({
   ]),
   confidence: z.number().min(0).max(1),
   shortReason: z.string().max(120),
+  auxiliaryReaction: z.string().max(24).nullable().optional(),
 });
 
 const playlistPlanSchema = z.object({
@@ -66,6 +67,12 @@ const selectedTracksSchema = z.object({
 const tasteSummarySchema = z.object({
   tasteSummary: z.string().min(20).max(900),
   activityPreferences: z.record(z.string(), z.string()).optional(),
+});
+
+const textingActionSchema = z.object({
+  mode: z.enum(["reaction_only", "message_only", "both", "none"]),
+  reaction: z.string().max(24).nullable().optional(),
+  message: z.string().max(320).nullable().optional(),
 });
 
 const firstNameSchema = z.object({
@@ -161,7 +168,14 @@ export class RotationAi {
       schema: intentSchema,
       providerOptions,
       system: styleGuide,
-      prompt: `classify this inbound text for a spotify playlist texting bot:\n\n${message}`,
+      prompt: `classify this inbound text for a spotify playlist texting bot.
+
+also choose an optional auxiliary reaction for the user's message when it adds texture while rotation works.
+use it sparingly. examples: 🏃 for a run request, 🏋️ for gym, 🔒 for lock-in/focus, 🔥 for hype, ❤️ for a genuinely nice message.
+leave auxiliaryReaction empty for routine commands, unclear requests, billing, or anything where a reaction would feel extra.
+
+text:
+${message}`,
     });
     return result.object;
   }
@@ -302,6 +316,41 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: JSON.stringify(args),
     });
     return preserveUrlsLowercase(result.text.trim());
+  }
+
+  async textingAction(args: {
+    kind: "smalltalk" | "pre_spotify_question" | "help";
+    userText: string;
+    fallbackMessage?: string;
+  }) {
+    const result = await generateObject({
+      model: model(),
+      schema: textingActionSchema,
+      providerOptions,
+      system: `${styleGuide}
+
+choose how rotation should respond in imessage.
+you can send just a tapback/reaction, just a text message, both, or nothing.
+use reaction_only for thanks, compliments, agreement, laughter, or low-information nice messages that do not require a real reply.
+use message_only for questions, instructions, or anything needing content.
+use both when a quick reaction plus a short useful reply feels natural.
+reaction can be a single emoji or a tapback word like love, like, laugh, emphasize, question.
+messages must be lowercase, compact, and natural. do not add markdown bullets.
+when kind is pre_spotify_question, these are the only facts you should rely on:
+- rotation makes spotify playlists over text.
+- spotify must be connected before playlist creation or personalized recommendations.
+- before spotify is connected, answer lightweight product/setup questions.
+- do not include an auth link or say a link is attached unless the user explicitly asks for one.
+- if they want to connect, tell them to ask for a fresh link.
+- rotation is $29.99/y after the first request.`,
+      prompt: JSON.stringify(args, null, 2),
+    });
+    return {
+      ...result.object,
+      message: result.object.message
+        ? preserveUrlsLowercase(result.object.message.trim())
+        : result.object.message,
+    };
   }
 
   async preSpotifyReply(userText: string) {

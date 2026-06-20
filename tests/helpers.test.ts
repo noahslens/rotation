@@ -53,3 +53,42 @@ test("tapback feedback maps only actionable reactions to replies", async () => {
   assert.equal(tapbackFeedbackReply("👍"), undefined);
   assert.equal(tapbackFeedbackReply("❤️"), undefined);
 });
+
+test("reaction formatter normalizes model aliases and rejects plain text", async () => {
+  const { normalizeReaction } = await import("../src/bot/rotationBot");
+
+  assert.equal(normalizeReaction("love"), "❤️");
+  assert.equal(normalizeReaction(":running:"), "🏃");
+  assert.equal(normalizeReaction("lock in"), "🔒");
+  assert.equal(normalizeReaction("🔥"), "🔥");
+  assert.equal(normalizeReaction("not a reaction"), undefined);
+});
+
+test("texting action formatter supports reaction only, message only, and both", async () => {
+  const { formatTextingAction } = await import("../src/bot/rotationBot");
+
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "reaction_only",
+      reaction: "heart",
+      message: "THANK YOU",
+    }),
+    { reaction: "❤️", message: undefined },
+  );
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "message_only",
+      reaction: "fire",
+      message: "CHECK THIS https://Example.com/ABC",
+    }),
+    { reaction: undefined, message: "check this https://Example.com/ABC" },
+  );
+  assert.deepEqual(
+    formatTextingAction({
+      mode: "both",
+      reaction: "gym",
+      message: "ON IT",
+    }),
+    { reaction: "🏋️", message: "on it" },
+  );
+});

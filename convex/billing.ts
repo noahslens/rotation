@@ -146,6 +146,24 @@ export const markNotificationSent = mutation({
   },
 });
 
+export const claimNotification = mutation({
+  args: {
+    notificationId: v.id("outboundNotifications"),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const notification = await ctx.db.get(args.notificationId);
+    if (!notification || notification.status !== "pending") return null;
+
+    await ctx.db.patch(args.notificationId, {
+      status: "in_progress",
+      updatedAt: args.now,
+    });
+
+    return notification;
+  },
+});
+
 export const markNotificationFailed = mutation({
   args: {
     notificationId: v.id("outboundNotifications"),

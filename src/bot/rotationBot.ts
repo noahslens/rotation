@@ -2735,15 +2735,11 @@ export class RotationBot {
 
   private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
     try {
-      await sendWithRetry(space, playlistLinkContent(url));
+      await space.send(playlistLinkContent(url));
       await outbound(user._id, "sent playlist richlink");
     } catch (caught) {
       console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
-      await sendLogged(
-        space,
-        user._id,
-        `the spotify preview didn't send cleanly, but here's the link: ${url}`,
-      );
+      await outbound(user._id, `playlist richlink send failed: ${url}`);
     }
   }
 

@@ -104,6 +104,12 @@ export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
         });
         for (const item of items) {
           const { notification, user, request } = item;
+          const claimed = await convex.mutation(api.billing.claimNotification, {
+            notificationId: notification._id,
+            now: Date.now(),
+          });
+          if (!claimed) continue;
+
           if (!user) {
             await convex.mutation(api.billing.markNotificationFailed, {
               notificationId: notification._id,

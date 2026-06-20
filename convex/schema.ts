@@ -244,7 +244,12 @@ export default defineSchema({
   outboundNotifications: defineTable({
     userId: v.id("users"),
     kind: v.union(v.literal("subscription_welcome")),
-    status: v.union(v.literal("pending"), v.literal("sent"), v.literal("failed")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("sent"),
+      v.literal("failed"),
+    ),
     requestId: v.optional(v.id("recommendationRequests")),
     error: v.optional(v.string()),
     createdAt: v.number(),

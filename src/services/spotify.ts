@@ -7,8 +7,8 @@ const accountsBaseUrl = "https://accounts.spotify.com";
 const apiBaseUrl = "https://api.spotify.com/v1";
 const refreshSkewMs = 90_000;
 const snapshotTrackBatchSize = 400;
-const spotifyPageConcurrency = 8;
-const spotifyPlaylistTrackConcurrency = 4;
+const spotifyPageConcurrency = 3;
+const spotifyPlaylistTrackConcurrency = 2;
 const spotifyRequestTimeoutMs = 20_000;
 
 export const spotifyScopes = [
@@ -765,6 +765,15 @@ export class SpotifyService {
         const delayMs = Number.isFinite(retryAfter)
           ? retryAfter * 1000
           : 800 * attempt;
+        console.warn("[spotify.request_retry]", {
+          userId,
+          method,
+          path: pathOrUrl.startsWith("http") ? new URL(pathOrUrl).pathname : pathOrUrl.split("?")[0],
+          status: response.status,
+          attempt,
+          retryAfterSeconds: Number.isFinite(retryAfter) ? retryAfter : undefined,
+          delayMs,
+        });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }

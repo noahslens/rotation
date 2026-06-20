@@ -21,13 +21,23 @@ export const logTurn = mutation({
 });
 
 export const recentTurns = query({
-  args: { userId: v.id("users"), limit: v.number() },
+  args: {
+    userId: v.id("users"),
+    limit: v.number(),
+    since: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const turns = await ctx.db
       .query("conversationTurns")
-      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user_created", (q) => {
+        const byUser = q.eq("userId", args.userId);
+        return args.since === undefined
+          ? byUser
+          : byUser.gte("createdAt", args.since);
+      })
       .order("desc")
       .take(args.limit);
+    return turns.reverse();
   },
 });
 

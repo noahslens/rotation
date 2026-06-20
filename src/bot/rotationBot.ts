@@ -7,7 +7,7 @@ import {
   type ContentInput,
 } from "spectrum-ts";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { RotationAi } from "../ai/rotationAi";
+import { RotationAi, type ConversationTurn } from "../ai/rotationAi";
 import { env } from "../config/env";
 import { api, convex } from "../state/convex";
 import { billingPortalText, paywallText } from "../services/stripe";
@@ -29,6 +29,8 @@ import {
 
 const dayMs = 24 * 60 * 60 * 1000;
 const weekMs = 7 * dayMs;
+const recentConversationMs = 60 * 60 * 1000;
+const recentConversationLimit = 80;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -515,7 +517,8 @@ export class RotationBot {
       await message.read().catch((caught) => {
         console.warn("[rotation.read_failed]", compactError(caught));
       });
-      await this.route(space, user, message.content.text, message);
+      const conversationHistory = await this.recentConversation(user._id);
+      await this.route(space, user, message.content.text, message, conversationHistory);
     } catch (caught) {
       await this.recordFailure("message_handler", user._id, { text: message.content.text }, caught);
       console.error("[rotation.error]", caught);
@@ -592,12 +595,14 @@ export class RotationBot {
         }
         return items;
       });
+      const conversationHistory = await this.recentConversation(user._id);
 
       if (user.onboardingStage === "new") {
         const action = await this.ai.voiceAction({
           voices,
           defaultCount: 50,
           preSpotify: true,
+          conversationHistory,
         });
         await this.logVoiceTurn(user._id, message.id, now, action.promptText);
         await this.withTyping(space, async () => {
@@ -611,6 +616,7 @@ export class RotationBot {
           voices,
           defaultCount: 50,
           preSpotify: true,
+          conversationHistory,
         });
         await this.logVoiceTurn(user._id, message.id, now, action.promptText);
 
@@ -646,6 +652,7 @@ export class RotationBot {
         voices,
         context,
         defaultCount: 50,
+        conversationHistory,
       });
       const promptText = action.promptText || "voice note";
       await this.logVoiceTurn(user._id, message.id, now, promptText);
@@ -720,6 +727,7 @@ export class RotationBot {
           deferDeliveryUntilPaid: shouldGateForPayment,
           precomputedPlan: playlistPlan,
           precomputedContext: context,
+          conversationHistory,
         });
       });
     } catch (caught) {
@@ -850,6 +858,14 @@ export class RotationBot {
     }
   }
 
+  private async recentConversation(userId: Id<"users">): Promise<ConversationTurn[]> {
+    return await convex.query(api.conversation.recentTurns, {
+      userId,
+      limit: recentConversationLimit,
+      since: Date.now() - recentConversationMs,
+    });
+  }
+
   private async applyTextingAction(
     space: Space,
     user: Doc<"users">,
@@ -959,6 +975,7 @@ export class RotationBot {
     user: Doc<"users">,
     text: string,
     sourceMessage: Message,
+    conversationHistory: ConversationTurn[],
   ) {
     if (user.onboardingStage === "new") {
       await this.withTyping(space, async () => {
@@ -968,7 +985,13 @@ export class RotationBot {
     }
 
     if (!user.spotifyLinked) {
-      await this.handlePreSpotify(space, user, text, sourceMessage);
+      await this.handlePreSpotify(
+        space,
+        user,
+        text,
+        sourceMessage,
+        conversationHistory,
+      );
       return;
     }
 
@@ -986,16 +1009,21 @@ export class RotationBot {
       user,
       text,
       sourceMessage,
+      conversationHistory,
     );
     if (pollAnswerHandled) return;
 
-    const intent = await this.ai.classify(text);
+    const intent = await this.ai.classify({
+      message: text,
+      conversationHistory,
+    });
     if (intent.intent === "help") {
       const action = await this.ai
         .textingAction({
           kind: "help",
           userText: text,
           fallbackMessage: fallbackCopy.help,
+          conversationHistory,
         })
         .catch(() => ({
           mode: "message_only" as const,
@@ -1027,6 +1055,7 @@ export class RotationBot {
           kind: "smalltalk",
           userText: text,
           fallbackMessage,
+          conversationHistory,
         })
         .catch(() => ({
           mode: "message_only" as const,
@@ -1063,6 +1092,7 @@ export class RotationBot {
         requestKind: "user",
         intent: intent.intent,
         deferDeliveryUntilPaid: shouldGateForPayment,
+        conversationHistory,
       });
     });
   }
@@ -1098,6 +1128,7 @@ export class RotationBot {
     user: Doc<"users">,
     text: string,
     sourceMessage: Message,
+    conversationHistory: ConversationTurn[],
   ) {
     const unsupportedServiceReply = unsupportedMusicServiceReply(text);
     if (unsupportedServiceReply) {
@@ -1120,6 +1151,7 @@ export class RotationBot {
         userText: text,
         fallbackMessage:
           "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
+        conversationHistory,
       })
       .catch(() => undefined);
     const formatted = action ? formatTextingAction(action) : {};
@@ -1131,7 +1163,7 @@ export class RotationBot {
     const reply =
       formatted.message ??
       (await this.ai
-        .preSpotifyReply(text)
+        .preSpotifyReply(text, conversationHistory)
         .catch(
           () =>
             "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
@@ -1156,6 +1188,7 @@ export class RotationBot {
     user: Doc<"users">,
     text: string,
     sourceMessage: Message,
+    conversationHistory: ConversationTurn[],
   ) {
     const openPoll = await convex.query(api.conversation.getOpenPoll, {
       userId: user._id,
@@ -1170,6 +1203,7 @@ export class RotationBot {
           kind: "poll_repeat",
           userText: text,
           extra: `${openPoll.question}: ${openPoll.options.join(", ")}`,
+          conversationHistory,
         },
         `pick one: ${openPoll.options.map((option, index) => `${index + 1}. ${option}`).join(" / ")}`,
       );
@@ -1193,6 +1227,7 @@ export class RotationBot {
         defaultCount: 50,
         requestKind: "user",
         deferDeliveryUntilPaid: openPoll.deliveryMode === "after_payment",
+        conversationHistory,
       });
     });
     return true;
@@ -1211,6 +1246,7 @@ export class RotationBot {
       deferDeliveryUntilPaid?: boolean;
       precomputedPlan?: Awaited<ReturnType<RotationAi["playlistPlan"]>>;
       precomputedContext?: MusicContext;
+      conversationHistory?: ConversationTurn[];
     },
   ) {
     const requestId = await convex.mutation(api.conversation.createRequest, {
@@ -1240,6 +1276,7 @@ export class RotationBot {
           pollAnswer: args.pollAnswer,
           newOnly,
           fixedTargetCount: args.requestKind !== "user",
+          conversationHistory: args.conversationHistory,
         }));
       const plan =
         args.requestKind === "user"
@@ -1292,6 +1329,7 @@ export class RotationBot {
         candidates,
         familiarTracks,
         newOnly,
+        args.conversationHistory,
       );
 
       if (selected.length === 0) {
@@ -1338,6 +1376,7 @@ export class RotationBot {
           userText: args.prompt,
           playlistName: playlist.name,
           extra: plan.userFacingSummary,
+          conversationHistory: args.conversationHistory,
         },
         `made ${playlist.name}`,
       );
@@ -1499,6 +1538,7 @@ export class RotationBot {
     candidates: CandidateTrack[],
     familiarTracks: RotationTrack[],
     newOnly: boolean,
+    conversationHistory?: ConversationTurn[],
   ) {
     const chosen = await this.ai.chooseTracks({
       prompt,
@@ -1506,6 +1546,7 @@ export class RotationBot {
       candidates,
       familiarTracks,
       newOnly,
+      conversationHistory,
     });
     const byId = new Map<string, RotationTrack>();
     for (const track of (newOnly ? candidates : [...candidates, ...familiarTracks])) {

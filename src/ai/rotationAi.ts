@@ -11,6 +11,13 @@ type MusicContext = {
   tracks: Doc<"spotifyTracks">[];
 };
 
+export type ConversationTurn = {
+  direction: "in" | "out";
+  text: string;
+  createdAt: number;
+  messageId?: string;
+};
+
 const model = () => google(env.geminiModel);
 const coverModel = () => google(env.geminiCoverModel);
 const providerOptions = {
@@ -40,6 +47,13 @@ const playlistJudgmentRules = [
   "choose the opener deliberately. track 1 should be the most situation-perfect tone setter, not merely the strongest personal taste match. in a group setting it should feel immediate, recognizable, and playable.",
   "for culturally obvious requests, include exact song and artist search queries for must-consider anchors so spotify can return them. for example, a high school graduation pool party should consider the spins mac miller plus sunny graduation, pool, senior summer, and party staples.",
   "after the essential situation anchors are covered, use the user's taste to shape texture, adjacent picks, sequencing, and deeper cuts.",
+].join("\n");
+
+const conversationRules = [
+  "recentConversation is chronological message history from about the last hour, if available.",
+  "use recentConversation to resolve follow-ups, pronouns, corrections, poll context, prior playlist requests, user preferences stated in chat, and references like that, same vibe, more upbeat, or less mainstream.",
+  "the latest inbound user message is still the main instruction. do not let old conversation override a clear new request.",
+  "do not quote or summarize recentConversation unless the user asks.",
 ].join("\n");
 
 const intentSchema = z.object({
@@ -187,6 +201,13 @@ const contextForModel = (context: MusicContext) => {
   };
 };
 
+const conversationForModel = (turns?: ConversationTurn[]) =>
+  (turns ?? []).slice(-60).map((turn) => ({
+    role: turn.direction === "in" ? "user" : "rotation",
+    text: turn.text.slice(0, 700),
+    minutesAgo: Math.max(0, Math.round((Date.now() - turn.createdAt) / 60_000)),
+  }));
+
 const preserveUrlsLowercase = (text: string) => {
   const urls: string[] = [];
   const placeholderText = text.replace(/https?:\/\/\S+/g, (url) => {
@@ -200,20 +221,31 @@ const preserveUrlsLowercase = (text: string) => {
 };
 
 export class RotationAi {
-  async classify(message: string) {
+  async classify(args: {
+    message: string;
+    conversationHistory?: ConversationTurn[];
+  }) {
     const result = await generateObject({
       model: model(),
       schema: intentSchema,
       providerOptions,
-      system: styleGuide,
+      system: `${styleGuide}
+
+${conversationRules}`,
       prompt: `classify this inbound text for a spotify playlist texting bot.
 
 also choose an optional auxiliary reaction for the user's message when it adds texture while rotation works.
 use it sparingly. examples: 🏃 for a run request, 🏋️ for gym, 🔒 for lock-in/focus, 🔥 for hype, ❤️ for a genuinely nice message.
 leave auxiliaryReaction empty for routine commands, unclear requests, billing, or anything where a reaction would feel extra.
 
-text:
-${message}`,
+${JSON.stringify(
+  {
+    text: args.message,
+    recentConversation: conversationForModel(args.conversationHistory),
+  },
+  null,
+  2,
+)}`,
     });
     return result.object;
   }
@@ -236,6 +268,7 @@ ${message}`,
     pollAnswer?: string;
     newOnly?: boolean;
     fixedTargetCount?: boolean;
+    conversationHistory?: ConversationTurn[];
   }) {
     const result = await generateObject({
       model: model(),
@@ -247,6 +280,7 @@ you choose music by using the user's full stored spotify song history plus spoti
 the musicContext contains full stored song history by source: liked songs in savedTracks, listening-history proxy tracks in topTracks, user-owned playlist tracks in playlistTracks, and prior rotation outputs in createdTracks.
 each track can include sources, playlistCount, and tasteWeight. tasteWeight is computed in convex from liked status, spotify top-track presence, and number of user-owned playlists containing the track.
 ${playlistJudgmentRules}
+${conversationRules}
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
 do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
@@ -273,6 +307,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
           defaultTargetCount: args.defaultCount,
           countMode: args.fixedTargetCount ? "fixed" : "dynamic",
           noveltyMode: args.newOnly ? "new_music_only" : "balanced",
+          recentConversation: conversationForModel(args.conversationHistory),
           musicContext: contextForModel(args.context),
         },
         null,
@@ -289,6 +324,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     candidates: CandidateTrack[];
     familiarTracks: RotationTrack[];
     newOnly?: boolean;
+    conversationHistory?: ConversationTurn[];
   }) {
     const result = await generateObject({
       model: model(),
@@ -298,6 +334,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
 
 choose the best spotify tracks for the requested playlist.
 ${playlistJudgmentRules}
+${conversationRules}
 selectedTrackIds is ordered playlist sequencing. the first id becomes track 1 in spotify.
 filter against the user's prompt first: a song that is in their history but wrong for the mood/activity should be ignored.
 if novelty mode is new_music_only, return only candidate track ids. use familiar tracks only as taste references, never as playlist picks.
@@ -312,6 +349,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
           plan: args.plan,
           noveltyMode: args.newOnly ? "new_music_only" : "balanced",
           targetCount: args.plan.targetCount,
+          recentConversation: conversationForModel(args.conversationHistory),
           candidates: args.candidates.slice(0, 320).map(compactTrack),
           familiarTracks: args.familiarTracks.map(compactTrack),
         },
@@ -350,12 +388,19 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
     spotifyUrl?: string;
     playlistName?: string;
     extra?: string;
+    conversationHistory?: ConversationTurn[];
   }) {
     const result = await generateText({
       model: model(),
       providerOptions,
-      system: styleGuide,
-      prompt: JSON.stringify(args),
+      system: `${styleGuide}
+
+${conversationRules}`,
+      prompt: JSON.stringify({
+        ...args,
+        conversationHistory: undefined,
+        recentConversation: conversationForModel(args.conversationHistory),
+      }),
     });
     return preserveUrlsLowercase(result.text.trim());
   }
@@ -364,6 +409,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
     kind: "smalltalk" | "pre_spotify_question" | "help";
     userText: string;
     fallbackMessage?: string;
+    conversationHistory?: ConversationTurn[];
   }) {
     const result = await generateObject({
       model: model(),
@@ -372,6 +418,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       system: `${styleGuide}
 
 choose how rotation should respond in imessage.
+${conversationRules}
 you can send just a tapback/reaction, just a text message, both, or nothing.
 use reaction_only for thanks, compliments, agreement, laughter, or low-information nice messages that do not require a real reply.
 use message_only for questions, instructions, or anything needing content.
@@ -387,7 +434,15 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
 - if they want to connect, tell them to ask for a fresh link.
 - only mention price if the user specifically asks about price, cost, paid plans, billing, or subscriptions.
 - if asked about price, say rotation is $29.99/y after the first request.`,
-      prompt: JSON.stringify(args, null, 2),
+      prompt: JSON.stringify(
+        {
+          ...args,
+          conversationHistory: undefined,
+          recentConversation: conversationForModel(args.conversationHistory),
+        },
+        null,
+        2,
+      ),
     });
     return {
       ...result.object,
@@ -397,11 +452,16 @@ when kind is pre_spotify_question, these are the only facts you should rely on:
     };
   }
 
-  async preSpotifyReply(userText: string) {
+  async preSpotifyReply(
+    userText: string,
+    conversationHistory?: ConversationTurn[],
+  ) {
     const result = await generateText({
       model: model(),
       providerOptions,
-      system: styleGuide,
+      system: `${styleGuide}
+
+${conversationRules}`,
       prompt: `answer this text from someone who has not connected spotify yet.
 
 facts:
@@ -415,7 +475,14 @@ facts:
 - do not include an auth link or tell them a link is attached.
 - if they want to connect, tell them to ask for a fresh link when they're ready.
 
-user text: ${userText}`,
+${JSON.stringify(
+  {
+    userText,
+    recentConversation: conversationForModel(conversationHistory),
+  },
+  null,
+  2,
+)}`,
     });
     return preserveUrlsLowercase(result.text.trim());
   }
@@ -432,6 +499,7 @@ user text: ${userText}`,
     fixedTargetCount?: boolean;
     newOnly?: boolean;
     preSpotify?: boolean;
+    conversationHistory?: ConversationTurn[];
   }) {
     const audioParts = args.voices.flatMap((voice, index) => [
       {
@@ -462,6 +530,7 @@ if spotify is not connected, do not create a playlistPlan. answer product/setup 
 if spotify is not connected and they ask whether apple music, soundcloud, youtube music, yt music, or another non-spotify service is supported, say not yet, spotify is the only one live rn, we're rushing to add the others asap, and we'll text them when it's ready.
 if spotify is connected, use the full music context the same way playlistPlan uses it for typed prompts.
 ${playlistJudgmentRules}
+${conversationRules}
 for playlistPlan rules, follow the same rules as typed playlist planning: dynamic counts for user requests, fixed counts only when countMode is fixed, new-music requests should exclude known liked/saved songs, and activity playlists may blend familiar anchors with fitting discovery.`,
       messages: [
         {
@@ -480,6 +549,7 @@ for playlistPlan rules, follow the same rules as typed playlist planning: dynami
                       : args.newOnly
                         ? "new_music_only"
                         : "balanced",
+                  recentConversation: conversationForModel(args.conversationHistory),
                   musicContext: args.context
                     ? contextForModel(args.context)
                     : undefined,

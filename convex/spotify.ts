@@ -76,6 +76,36 @@ export const consumeAuthState = mutation({
   },
 });
 
+export const getAuthState = query({
+  args: { state: v.string(), now: v.number() },
+  handler: async (ctx, args) => {
+    const record = await ctx.db
+      .query("spotifyAuthStates")
+      .withIndex("by_state", (q) => q.eq("state", args.state))
+      .unique();
+
+    if (!record || record.consumedAt || record.expiresAt < args.now) {
+      throw new Error("invalid or expired spotify auth state");
+    }
+
+    return record;
+  },
+});
+
+export const markAuthStateConsumed = mutation({
+  args: { authStateId: v.id("spotifyAuthStates"), now: v.number() },
+  handler: async (ctx, args) => {
+    const record = await ctx.db.get(args.authStateId);
+
+    if (!record || record.consumedAt || record.expiresAt < args.now) {
+      throw new Error("invalid or expired spotify auth state");
+    }
+
+    await ctx.db.patch(args.authStateId, { consumedAt: args.now });
+    return record;
+  },
+});
+
 export const saveTokens = mutation({
   args: {
     userId: v.id("users"),

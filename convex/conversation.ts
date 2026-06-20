@@ -157,3 +157,14 @@ export const recordJobFailure = mutation({
     });
   },
 });
+
+export const recentJobFailures = query({
+  args: { limit: v.number() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("jobFailures")
+      .withIndex("by_created")
+      .order("desc")
+      .take(args.limit);
+  },
+});

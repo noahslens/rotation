@@ -1,4 +1,5 @@
 import { httpRouter } from "convex/server";
+import type { Id } from "./_generated/dataModel";
 import { api } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 
@@ -115,6 +116,57 @@ const verifyStripeSignature = async (payload: string, header: string | null) => 
   }
 };
 
+type SpotifyTokenPayload = {
+  access_token?: string;
+  refresh_token?: string;
+  token_type?: string;
+  scope?: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+};
+
+class SpotifyTokenError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SpotifyTokenError";
+    this.status = status;
+  }
+}
+
+const wait = async (ms: number) =>
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const parseRetryAfterMs = (value: string | null) => {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return undefined;
+};
+
+const parseSpotifyTokenPayload = (text: string) => {
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as SpotifyTokenPayload;
+  } catch {
+    return { error_description: text.trim() };
+  }
+};
+
+const spotifyTokenErrorMessage = (
+  payload: SpotifyTokenPayload,
+  status: number,
+) =>
+  payload.error_description ??
+  payload.error ??
+  (status === 429 ? "too many requests" : String(status));
+
 const spotifyTokenRequest = async (
   body: URLSearchParams,
 ): Promise<{
@@ -127,41 +179,53 @@ const spotifyTokenRequest = async (
   const clientId = requiredEnv("SPOTIFY_CLIENT_ID");
   const clientSecret = requiredEnv("SPOTIFY_CLIENT_SECRET");
   const basic = btoa(`${clientId}:${clientSecret}`);
-  const response = await fetch(`${spotifyAccountsBaseUrl}/api/token`, {
-    method: "POST",
-    headers: {
-      authorization: `Basic ${basic}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
 
-  const payload = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    token_type?: string;
-    scope?: string;
-    expires_in?: number;
-    error?: string;
-    error_description?: string;
-  };
-  if (!response.ok) {
-    throw new Error(
-      `spotify token exchange failed: ${payload.error_description ?? payload.error ?? response.status}`,
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(`${spotifyAccountsBaseUrl}/api/token`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${basic}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+    const payload = parseSpotifyTokenPayload(await response.text());
+
+    if (response.ok) {
+      if (
+        !payload.access_token ||
+        !payload.token_type ||
+        !payload.scope ||
+        !payload.expires_in
+      ) {
+        throw new Error("spotify token response was missing required fields");
+      }
+
+      return {
+        access_token: payload.access_token,
+        refresh_token: payload.refresh_token,
+        token_type: payload.token_type,
+        scope: payload.scope,
+        expires_in: payload.expires_in,
+      };
+    }
+
+    const canRetry =
+      attempt < 2 &&
+      (response.status === 429 || [500, 502, 503, 504].includes(response.status));
+    if (canRetry) {
+      const retryAfter = parseRetryAfterMs(response.headers.get("retry-after"));
+      await wait(Math.min(retryAfter ?? 1000 * (attempt + 1), 5000));
+      continue;
+    }
+
+    throw new SpotifyTokenError(
+      `spotify token exchange failed: ${spotifyTokenErrorMessage(payload, response.status)}`,
+      response.status,
     );
   }
 
-  if (!payload.access_token || !payload.token_type || !payload.scope || !payload.expires_in) {
-    throw new Error("spotify token response was missing required fields");
-  }
-
-  return {
-    access_token: payload.access_token,
-    refresh_token: payload.refresh_token,
-    token_type: payload.token_type,
-    scope: payload.scope,
-    expires_in: payload.expires_in,
-  };
+  throw new Error("spotify token exchange failed");
 };
 
 const spotifyProfile = async (
@@ -218,11 +282,14 @@ const spotifyCallback = httpAction(async (ctx, request) => {
     );
   }
 
+  let userIdForFailure: Id<"users"> | undefined;
+
   try {
-    const authState = await ctx.runMutation(api.spotify.consumeAuthState, {
+    const authState = await ctx.runQuery(api.spotify.getAuthState, {
       state,
       now,
     });
+    userIdForFailure = authState.userId;
 
     const token = await spotifyTokenRequest(
       new URLSearchParams({
@@ -235,6 +302,11 @@ const spotifyCallback = httpAction(async (ctx, request) => {
     if (!token.refresh_token) {
       throw new Error("spotify did not return a refresh token");
     }
+
+    await ctx.runMutation(api.spotify.markAuthStateConsumed, {
+      authStateId: authState._id,
+      now,
+    });
 
     const profile = await spotifyProfile(token.access_token);
     await ctx.runMutation(api.spotify.saveTokens, {
@@ -262,13 +334,18 @@ const spotifyCallback = httpAction(async (ctx, request) => {
     const message = caught instanceof Error ? caught.message : String(caught);
     await ctx.runMutation(api.conversation.recordJobFailure, {
       job: "spotify_oauth_callback",
+      userId: userIdForFailure,
       payloadJson: JSON.stringify({ state }),
       error: message,
       now,
     });
+    const isRateLimited =
+      caught instanceof SpotifyTokenError && caught.status === 429;
     return html(
-      "<h1>link failed</h1><p>text rotation and ask for a fresh spotify link.</p>",
-      500,
+      isRateLimited
+        ? "<h1>spotify is busy</h1><p>wait a minute, then text rotation and ask for a fresh spotify link.</p>"
+        : "<h1>link failed</h1><p>text rotation and ask for a fresh spotify link.</p>",
+      isRateLimited ? 429 : 500,
     );
   }
 });

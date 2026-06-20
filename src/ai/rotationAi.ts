@@ -33,6 +33,15 @@ const styleGuide = [
   "never use em dashes.",
 ].join("\n");
 
+const playlistJudgmentRules = [
+  "before choosing music, interpret the situation: private listening vs group setting, activity, life moment, location, time of day, desired familiarity, energy arc, and how much the room needs obvious shared context.",
+  "for social, party, school, graduation, birthday, wedding, pregame, trip, pool, beach, barbecue, or group settings, the event and room can outrank the user's normal taste, especially for the first 5 to 10 songs.",
+  "include culturally obvious anchors, era staples, event staples, and crowd layups when they fit the situation, even if they are not usually the user's exact taste, unless the user explicitly asks for obscure, deep cuts, or new music only.",
+  "choose the opener deliberately. track 1 should be the most situation-perfect tone setter, not merely the strongest personal taste match. in a group setting it should feel immediate, recognizable, and playable.",
+  "for culturally obvious requests, include exact song and artist search queries for must-consider anchors so spotify can return them. for example, a high school graduation pool party should consider the spins mac miller plus sunny graduation, pool, senior summer, and party staples.",
+  "after the essential situation anchors are covered, use the user's taste to shape texture, adjacent picks, sequencing, and deeper cuts.",
+].join("\n");
+
 const intentSchema = z.object({
   intent: z.enum([
     "help",
@@ -237,6 +246,7 @@ ${message}`,
 you choose music by using the user's full stored spotify song history plus spotify catalog search.
 the musicContext contains full stored song history by source: liked songs in savedTracks, listening-history proxy tracks in topTracks, user-owned playlist tracks in playlistTracks, and prior rotation outputs in createdTracks.
 each track can include sources, playlistCount, and tasteWeight. tasteWeight is computed in convex from liked status, spotify top-track presence, and number of user-owned playlists containing the track.
+${playlistJudgmentRules}
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
 do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
@@ -287,10 +297,13 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
+${playlistJudgmentRules}
+selectedTrackIds is ordered playlist sequencing. the first id becomes track 1 in spotify.
 filter against the user's prompt first: a song that is in their history but wrong for the mood/activity should be ignored.
 if novelty mode is new_music_only, return only candidate track ids. use familiar tracks only as taste references, never as playlist picks.
 for new music/discovery, prioritize tracks that fit the user's taste but are less obvious: adjacent artists, deeper cuts, and non-super-mainstream songs. avoid huge hits unless explicitly requested.
 if novelty mode is balanced, prefer candidate tracks for discovery, but include familiar tracks from the user's history when they strongly fit the request.
+for balanced group/social playlists, include the strongest situation anchors before taste-only picks, and sequence the opener as the most context-perfect song available.
 avoid duplicate artists too close together unless the prompt asks for one artist.
 return only ids from the provided lists that are allowed by the novelty mode.`,
       prompt: JSON.stringify(
@@ -448,6 +461,7 @@ wantsSpotifyLink is true only when the user explicitly asks to connect or get a 
 if spotify is not connected, do not create a playlistPlan. answer product/setup questions briefly and tell them to ask for a fresh link only if they want to connect.
 if spotify is not connected and they ask whether apple music, soundcloud, youtube music, yt music, or another non-spotify service is supported, say not yet, spotify is the only one live rn, we're rushing to add the others asap, and we'll text them when it's ready.
 if spotify is connected, use the full music context the same way playlistPlan uses it for typed prompts.
+${playlistJudgmentRules}
 for playlistPlan rules, follow the same rules as typed playlist planning: dynamic counts for user requests, fixed counts only when countMode is fixed, new-music requests should exclude known liked/saved songs, and activity playlists may blend familiar anchors with fitting discovery.`,
       messages: [
         {

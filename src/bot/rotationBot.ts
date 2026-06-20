@@ -1367,7 +1367,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      "how it works: text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i’ll make the playlist.";
+      "now let's build a custom playlist. text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i'll make it.";
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,

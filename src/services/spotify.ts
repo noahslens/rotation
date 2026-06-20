@@ -239,7 +239,20 @@ export class SpotifyService {
 
     await convex.mutation(api.spotify.saveCreatedTracks, {
       userId: user._id,
-      tracks: input.tracks.map((track) => ({ ...track, source: "created" as const })),
+      tracks: input.tracks.map((track) => ({
+        spotifyTrackId: track.spotifyTrackId,
+        name: track.name,
+        artists: track.artists,
+        album: track.album,
+        uri: track.uri,
+        externalUrl: track.externalUrl,
+        popularity: track.popularity,
+        durationMs: track.durationMs,
+        explicit: track.explicit,
+        previewUrl: track.previewUrl,
+        source: "created" as const,
+        playlistIds: track.playlistIds,
+      })),
       now: Date.now(),
     });
 

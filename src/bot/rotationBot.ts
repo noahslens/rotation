@@ -1,8 +1,8 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
-import { poll, richlink, type ContentInput } from "spectrum-ts";
-import { nativeContactCard } from "@spectrum-ts/imessage";
+import { attachment, contact, poll, richlink, type ContentInput } from "spectrum-ts";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { RotationAi } from "../ai/rotationAi";
+import { env } from "../config/env";
 import { api, convex } from "../state/convex";
 import { paywallText } from "../services/stripe";
 import {
@@ -17,9 +17,10 @@ const weekMs = 7 * dayMs;
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 
 const fallbackCopy = {
-  greeting: "yo, i'm rotation. i'll make spotify playlists over text.",
+  greeting:
+    "yo, i'm rotation. i'll make your spotify playlists over text. whether it's finding you new music or helping you rediscover old favs in a pinch.",
   linked:
-    "spotify is linked. i'm reading your taste now and making your first rotation.",
+    "spotify is linked. i'm digesting your taste now and making your first rotation. this takes about 2-4 mins.",
   help:
     "ask for stuff like: “morning run”, “more like my liked songs”, “200 songs i’d fw”, or “gym but not corny”.",
   notLinked: "link spotify first and i can start cooking.",
@@ -74,6 +75,40 @@ const normalize = (value: string) =>
     .replace(/[^\p{L}\p{N}\s]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
+
+const greetingPrefix = (text: string) => {
+  const clean = normalize(text);
+  if (/^(hi|hii|hiii|hiya)\b/.test(clean)) return "hi";
+  if (/^(hey|heyy|heyyy)\b/.test(clean)) return "hey";
+  if (/^(hello|helloo)\b/.test(clean)) return "hello";
+  if (/^(yo|yoo|yooo)\b/.test(clean)) return "yo";
+  if (/^(sup|wassup|whats up|what up)\b/.test(clean)) return "sup";
+  if (/^(gm|good morning)\b/.test(clean)) return "gm";
+  return "yo";
+};
+
+const greetingCopy = (text: string) =>
+  `${greetingPrefix(text)}, i'm rotation. i'll make your spotify playlists over text. whether it's finding you new music or helping you rediscover old favs in a pinch.`;
+
+const escapeVCardValue = (value: string) =>
+  value
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;");
+
+const rotationVCard = () => [
+  "BEGIN:VCARD",
+  "VERSION:3.0",
+  "N:;Rotation;;;",
+  "FN:Rotation",
+  "ORG:Rotation",
+  env.rotationPhone ? `TEL;TYPE=CELL:${env.rotationPhone}` : undefined,
+  `NOTE:${escapeVCardValue("spotify playlists over text")}`,
+  "END:VCARD",
+]
+  .filter(Boolean)
+  .join("\n");
 
 const resolvePollOption = (text: string, options: string[]) => {
   const clean = normalize(text);
@@ -210,6 +245,7 @@ export class RotationBot {
 
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
     if (!user.spotifyLinked || user.initialPlaylistDeliveredAt) return;
+    const sendProgress = !user.initialPlaylistStartedAt;
     console.info("[rotation.initial] start", {
       userId: user._id,
       initialPlaylistStartedAt: user.initialPlaylistStartedAt,
@@ -226,6 +262,7 @@ export class RotationBot {
         "make my first rotation: 50 new songs that fit my spotify taste. use my liked songs as taste evidence, but do not include songs i already have liked or saved. make it high-confidence layups, not obvious mainstream hits.",
       defaultCount: 50,
       requestKind: "initial",
+      sendProgress,
     });
     await convex.mutation(api.users.markInitialPlaylistDelivered, {
       userId: user._id,
@@ -278,7 +315,7 @@ export class RotationBot {
 
   private async route(space: Space, user: Doc<"users">, text: string) {
     if (user.onboardingStage === "new") {
-      await this.sendGreeting(space, user);
+      await this.sendGreeting(space, user, text);
       return;
     }
 
@@ -326,11 +363,24 @@ export class RotationBot {
     });
   }
 
-  private async sendGreeting(space: Space, user: Doc<"users">) {
-    await sendLogged(space, user._id, fallbackCopy.greeting);
-    await space.send(nativeContactCard()).catch((caught) => {
-      console.warn("[rotation.contact_card_failed]", compactError(caught));
-    });
+  private async sendGreeting(space: Space, user: Doc<"users">, text: string) {
+    await sendLogged(space, user._id, greetingCopy(text));
+    const vCard = rotationVCard();
+    await sendWithRetry(space, contact(vCard))
+      .then(async () => {
+        await outbound(user._id, "sent rotation contact card");
+      })
+      .catch(async (caught) => {
+        console.warn("[rotation.contact_card_failed]", compactError(caught));
+        await sendWithRetry(
+          space,
+          attachment(Buffer.from(vCard, "utf8"), {
+            name: "Rotation.vcf",
+            mimeType: "text/vcard",
+          }),
+        );
+        await outbound(user._id, "sent rotation vcard attachment");
+      });
     await convex.mutation(api.users.setOnboardingStage, {
       userId: user._id,
       onboardingStage: "link_sent",
@@ -398,6 +448,7 @@ export class RotationBot {
       requestKind: "initial" | "weekly" | "user";
       intent?: string;
       pollAnswer?: string;
+      sendProgress?: boolean;
     },
   ) {
     const requestId = await convex.mutation(api.conversation.createRequest, {
@@ -409,6 +460,13 @@ export class RotationBot {
 
     try {
       const context = await this.freshMusicContext(user);
+      if (args.sendProgress) {
+        await sendLogged(
+          space,
+          user._id,
+          "your library's deep. taste is way more specific than the usual spotify boxes lol",
+        );
+      }
       const newOnly = shouldUseNewOnly(args);
       const rawPlan = await this.ai.playlistPlan({
         prompt: args.prompt,
@@ -422,6 +480,13 @@ export class RotationBot {
         args.requestKind === "user"
           ? rawPlan
           : { ...rawPlan, targetCount: args.defaultCount };
+      if (args.sendProgress) {
+        await sendLogged(
+          space,
+          user._id,
+          "there's a real lane here. digging for stuff that feels like it should already be in your likes.",
+        );
+      }
 
       if (plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length && !args.pollAnswer) {
         await convex.mutation(api.conversation.createPendingPoll, {

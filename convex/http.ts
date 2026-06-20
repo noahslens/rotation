@@ -260,7 +260,7 @@ const spotifyTokenRequest = async (
     }
 
     throw new SpotifyTokenError(
-      `spotify token exchange failed: ${spotifyTokenErrorMessage(payload, response.status)}`,
+      `spotify token exchange failed (${response.status}): ${spotifyTokenErrorMessage(payload, response.status)}`,
       response.status,
     );
   }
@@ -302,7 +302,7 @@ const spotifyProfile = async (
     }
 
     throw new SpotifyApiError(
-      `spotify profile fetch failed: ${spotifyProfileErrorMessage(payload, response.status)}`,
+      `spotify profile fetch failed (${response.status}): ${spotifyProfileErrorMessage(payload, response.status)}`,
       response.status,
     );
   }
@@ -355,11 +355,6 @@ const spotifyCallback = httpAction(async (ctx, request) => {
       throw new Error("spotify did not return a refresh token");
     }
 
-    await ctx.runMutation(api.spotify.markAuthStateConsumed, {
-      authStateId: authState._id,
-      now,
-    });
-
     const profile = await spotifyProfile(token.access_token);
     await ctx.runMutation(api.spotify.saveTokens, {
       userId: authState.userId,
@@ -376,6 +371,10 @@ const spotifyCallback = httpAction(async (ctx, request) => {
       spotifyDisplayName: profile.display_name,
       spotifyEmail: profile.email,
       defaultMarket: profile.country,
+      now,
+    });
+    await ctx.runMutation(api.spotify.markAuthStateConsumed, {
+      authStateId: authState._id,
       now,
     });
 

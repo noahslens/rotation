@@ -10,6 +10,7 @@
 
 import type * as billing from "../billing.js";
 import type * as conversation from "../conversation.js";
+import type * as http from "../http.js";
 import type * as listening from "../listening.js";
 import type * as spotify from "../spotify.js";
 import type * as users from "../users.js";
@@ -23,6 +24,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   billing: typeof billing;
   conversation: typeof conversation;
+  http: typeof http;
   listening: typeof listening;
   spotify: typeof spotify;
   users: typeof users;

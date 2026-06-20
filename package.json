@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "convex:codegen": "convex codegen --typecheck disable"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.83",

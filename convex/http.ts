@@ -4,6 +4,7 @@ import { httpAction } from "./_generated/server";
 
 const spotifyAccountsBaseUrl = "https://accounts.spotify.com";
 const spotifyApiBaseUrl = "https://api.spotify.com/v1";
+const stripeToleranceSeconds = 5 * 60;
 
 const html = (body: string, status = 200) =>
   new Response(
@@ -62,6 +63,56 @@ const encrypt = async (value: string) => {
     utf8.encode(value),
   );
   return `v1:${base64UrlEncode(iv)}:${base64UrlEncode(new Uint8Array(ciphertext))}`;
+};
+
+const bytesToHex = (bytes: ArrayBuffer) =>
+  [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+const secureEqual = (a: string, b: string) => {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    result |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return result === 0;
+};
+
+const verifyStripeSignature = async (payload: string, header: string | null) => {
+  if (!header) throw new Error("missing stripe signature");
+  const timestamp = header
+    .split(",")
+    .find((part) => part.startsWith("t="))
+    ?.slice(2);
+  const signatures = header
+    .split(",")
+    .filter((part) => part.startsWith("v1="))
+    .map((part) => part.slice(3));
+
+  if (!timestamp || signatures.length === 0) {
+    throw new Error("invalid stripe signature header");
+  }
+
+  const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+  if (!Number.isFinite(age) || age > stripeToleranceSeconds) {
+    throw new Error("stale stripe signature");
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    utf8.encode(requiredEnv("STRIPE_WEBHOOK_SECRET")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const expected = bytesToHex(
+    await crypto.subtle.sign("HMAC", key, utf8.encode(`${timestamp}.${payload}`)),
+  );
+
+  if (!signatures.some((signature) => secureEqual(signature, expected))) {
+    throw new Error("invalid stripe signature");
+  }
 };
 
 const spotifyTokenRequest = async (
@@ -226,6 +277,87 @@ const health = httpAction(async () => {
   return Response.json({ ok: true, app: "rotation" });
 });
 
+const mapStripeStatus = (status: string | undefined) => {
+  switch (status) {
+    case "trialing":
+    case "active":
+    case "past_due":
+    case "canceled":
+    case "unpaid":
+      return status;
+    default:
+      return "unknown";
+  }
+};
+
+const stripeWebhook = httpAction(async (ctx, request) => {
+  const now = Date.now();
+  const rawBody = await request.text();
+
+  try {
+    await verifyStripeSignature(rawBody, request.headers.get("stripe-signature"));
+    const event = JSON.parse(rawBody) as {
+      id: string;
+      type: string;
+      data?: { object?: Record<string, unknown> };
+    };
+    const object = event.data?.object ?? {};
+    const customer =
+      typeof object.customer === "string" ? object.customer : undefined;
+    const subscription =
+      typeof object.subscription === "string"
+        ? object.subscription
+        : typeof object.id === "string" && event.type.startsWith("customer.subscription.")
+          ? object.id
+          : undefined;
+    const userId =
+      typeof object.client_reference_id === "string"
+        ? object.client_reference_id
+        : undefined;
+
+    await ctx.runMutation(api.billing.logStripeEvent, {
+      stripeEventId: event.id,
+      type: event.type,
+      userId: userId as never,
+      stripeCustomerId: customer,
+      stripeSubscriptionId: subscription,
+      now,
+    });
+
+    if (event.type === "checkout.session.completed") {
+      await ctx.runMutation(api.billing.setSubscriptionStatus, {
+        userId: userId as never,
+        stripeCustomerId: customer,
+        stripeSubscriptionId: subscription,
+        subscriptionStatus: "active",
+        now,
+      });
+    }
+
+    if (event.type.startsWith("customer.subscription.")) {
+      await ctx.runMutation(api.billing.setSubscriptionStatus, {
+        stripeCustomerId: customer,
+        stripeSubscriptionId: subscription,
+        subscriptionStatus: mapStripeStatus(
+          typeof object.status === "string" ? object.status : undefined,
+        ),
+        now,
+      });
+    }
+
+    return Response.json({ received: true });
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    await ctx.runMutation(api.conversation.recordJobFailure, {
+      job: "stripe_webhook",
+      payloadJson: rawBody.slice(0, 4000),
+      error: message,
+      now,
+    });
+    return Response.json({ error: message }, { status: 400 });
+  }
+});
+
 const http = httpRouter();
 
 http.route({
@@ -238,6 +370,12 @@ http.route({
   path: "/health",
   method: "GET",
   handler: health,
+});
+
+http.route({
+  path: "/stripe/webhook",
+  method: "POST",
+  handler: stripeWebhook,
 });
 
 export default http;

@@ -56,6 +56,11 @@ const conversationRules = [
   "do not quote or summarize recentConversation unless the user asks.",
 ].join("\n");
 
+const deliveryFacts = [
+  "when rotation creates a spotify playlist, the user can also find it at the top of their spotify library.",
+  "if a playlist link or preview does not show up, the user can ask rotation to resend it.",
+].join("\n");
+
 const intentSchema = z.object({
   intent: z.enum([
     "help",
@@ -231,7 +236,8 @@ export class RotationAi {
       providerOptions,
       system: `${styleGuide}
 
-${conversationRules}`,
+${conversationRules}
+${deliveryFacts}`,
       prompt: `classify this inbound text for a spotify playlist texting bot.
 
 also choose an optional auxiliary reaction for the user's message when it adds texture while rotation works.
@@ -395,7 +401,8 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       providerOptions,
       system: `${styleGuide}
 
-${conversationRules}`,
+${conversationRules}
+${deliveryFacts}`,
       prompt: JSON.stringify({
         ...args,
         conversationHistory: undefined,
@@ -419,6 +426,7 @@ ${conversationRules}`,
 
 choose how rotation should respond in imessage.
 ${conversationRules}
+${deliveryFacts}
 you can send just a tapback/reaction, just a text message, both, or nothing.
 use reaction_only for thanks, compliments, agreement, laughter, or low-information nice messages that do not require a real reply.
 use message_only for questions, instructions, or anything needing content.

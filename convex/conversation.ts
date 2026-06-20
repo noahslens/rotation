@@ -117,6 +117,26 @@ export const latestUndeliveredPaidRequest = query({
   },
 });
 
+export const latestCompletedPlaylistRequest = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const requests = await ctx.db
+      .query("recommendationRequests")
+      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(30);
+
+    return (
+      requests.find(
+        (request) =>
+          request.status === "completed" &&
+          request.playlistUrl &&
+          request.playlistId,
+      ) ?? null
+    );
+  },
+});
+
 export const failRequest = mutation({
   args: {
     requestId: v.id("recommendationRequests"),

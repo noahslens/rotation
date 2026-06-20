@@ -56,6 +56,17 @@ test("pre-spotify link detector requires an explicit link request", async () => 
   assert.equal(wantsSpotifyLink("what can you do before i connect"), false);
 });
 
+test("playlist link resend detector avoids spotify auth links", async () => {
+  const { wantsPlaylistLinkResend } = await import("../src/bot/rotationBot");
+
+  assert.equal(wantsPlaylistLinkResend("can you send it again"), true);
+  assert.equal(wantsPlaylistLinkResend("playlist link didn't go through"), true);
+  assert.equal(wantsPlaylistLinkResend("no preview showed up"), true);
+  assert.equal(wantsPlaylistLinkResend("send me a fresh spotify link"), false);
+  assert.equal(wantsPlaylistLinkResend("can i connect spotify again"), false);
+  assert.equal(wantsPlaylistLinkResend("make another pool party playlist"), false);
+});
+
 test("unsupported service detector answers onboarding support questions only", async () => {
   const { unsupportedMusicServiceReply } = await import("../src/bot/rotationBot");
 

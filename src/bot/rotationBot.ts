@@ -426,6 +426,36 @@ export const wantsSpotifyLink = (text: string) => {
   );
 };
 
+export const wantsPlaylistLinkResend = (text: string) => {
+  const clean = normalize(text);
+  if (!clean) return false;
+
+  const resendIntent =
+    /\b(resend|re-send|send again|send it again|send that again|send the link again|drop it again|drop the link again|text it again)\b/.test(
+      clean,
+    ) ||
+    /\b(didn'?t|did not|never)\b.{0,24}\b(go through|send|come through|show up|get|got)\b/.test(
+      clean,
+    ) ||
+    /\b(no|missing|lost|broken|failed)\b.{0,16}\b(playlist\s+)?(link|preview)\b/.test(
+      clean,
+    ) ||
+    /\b(link|preview)\b.{0,24}\b(didn'?t|did not|never|failed|broke|missing|lost)\b/.test(
+      clean,
+    );
+  if (!resendIntent) return false;
+
+  const playlistReference =
+    /\b(playlist|rotation|spotify playlist|the link|playlist link|preview|rich link|it|that)\b/.test(
+      clean,
+    );
+  const spotifyAuthReference =
+    /\b(spotify|auth|login|connect|authorize|reauth|re auth)\b/.test(clean) &&
+    !/\bplaylist\b/.test(clean);
+
+  return playlistReference && !spotifyAuthReference;
+};
+
 export const unsupportedMusicServiceReply = (text: string) => {
   const clean = normalize(text);
   if (!clean) return undefined;
@@ -1016,6 +1046,13 @@ export class RotationBot {
       const latest = await convex.query(api.users.getById, { userId: user._id });
       if (!latest) return;
       user = latest;
+    }
+
+    if (wantsPlaylistLinkResend(text)) {
+      await this.withTyping(space, async () => {
+        await this.resendLatestPlaylistLink(space, user);
+      });
+      return;
     }
 
     const pollAnswerHandled = await this.maybeHandlePollAnswer(
@@ -1654,9 +1691,53 @@ export class RotationBot {
     });
   }
 
+  private async resendLatestPlaylistLink(space: Space, user: Doc<"users">) {
+    const request = await convex.query(api.conversation.latestCompletedPlaylistRequest, {
+      userId: user._id,
+    });
+
+    if (!request?.playlistUrl) {
+      await sendLogged(
+        space,
+        user._id,
+        "i don't have a finished playlist link to resend yet. once it's made, it'll also be at the top of your spotify library.",
+      );
+      return;
+    }
+
+    const isPaidUndelivered =
+      request.deliveryMode === "after_payment" && !request.deliveredAt;
+    if (isPaidUndelivered && !hasActiveSubscription(user)) {
+      await sendLogged(space, user._id, paywallText(user._id, { buildingPlaylist: true }));
+      await convex.mutation(api.users.markPaywallShown, {
+        userId: user._id,
+        now: Date.now(),
+      });
+      return;
+    }
+
+    await sendLogged(
+      space,
+      user._id,
+      "resent it. if imessage drops the preview, it's also at the top of your spotify library.",
+    );
+    await this.sendPlaylistLink(space, user, request.playlistUrl);
+    if (!request.deliveredAt) {
+      await convex.mutation(api.conversation.markRequestDelivered, {
+        requestId: request._id,
+        now: Date.now(),
+      });
+    }
+  }
+
   private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
-    await sendWithRetry(space, richlink(url));
-    await outbound(user._id, url);
+    try {
+      await sendWithRetry(space, richlink(url));
+      await outbound(user._id, url);
+    } catch (caught) {
+      console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
+      await sendLogged(space, user._id, url);
+    }
   }
 
   async deliverBillingNotification(

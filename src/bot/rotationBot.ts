@@ -158,6 +158,31 @@ const explicitlyAllowsKnownMusic = (prompt: string) =>
     prompt,
   );
 
+export const wantsSpotifyLink = (text: string) => {
+  const clean = normalize(text);
+  if (!clean) return false;
+
+  const requestVerb =
+    /\b(send|resend|give|drop|text|make|create|get|need|want)\b.{0,36}\b(fresh|new|another)?\s*(spotify\s+)?(link|auth|login|connect)\b/;
+  const conversationalRequest =
+    /\b(can you|could you|can i|could i|let me|lemme|help me|i am ready to|im ready to|ready to|trying to|try to)\b.{0,36}\b(link|connect|authorize|auth|reauth|re auth)\b.{0,16}\bspotify\b/;
+  const directSpotifyAction =
+    /^(link|connect|authorize|auth|reauth|re auth)\b.{0,16}\bspotify\b/;
+  const freshLink =
+    /\b(fresh|new|another|updated)\b.{0,12}\b(spotify\s+)?(link|auth|login)\b/;
+  const retryLink =
+    /\b(try again|retry|start over)\b/.test(clean) &&
+    /\b(spotify|link|auth|login|connect)\b/.test(clean);
+
+  return (
+    requestVerb.test(clean) ||
+    conversationalRequest.test(clean) ||
+    directSpotifyAction.test(clean) ||
+    freshLink.test(clean) ||
+    retryLink
+  );
+};
+
 const shouldUseNewOnly = (args: {
   requestKind: "initial" | "weekly" | "user";
   intent?: string;
@@ -320,7 +345,7 @@ export class RotationBot {
     }
 
     if (!user.spotifyLinked) {
-      await this.sendSpotifyLink(space, user);
+      await this.handlePreSpotify(space, user, text);
       return;
     }
 
@@ -387,6 +412,21 @@ export class RotationBot {
       now: Date.now(),
     });
     await this.sendSpotifyLink(space, user);
+  }
+
+  private async handlePreSpotify(space: Space, user: Doc<"users">, text: string) {
+    if (wantsSpotifyLink(text)) {
+      await this.sendSpotifyLink(space, user);
+      return;
+    }
+
+    const reply = await this.ai
+      .preSpotifyReply(text)
+      .catch(
+        () =>
+          "i can answer questions here, but i need spotify connected before i can make playlists. ask for a fresh link when you're ready.",
+      );
+    await sendLogged(space, user._id, reply);
   }
 
   private async sendSpotifyLink(space: Space, user: Doc<"users">, name?: string) {

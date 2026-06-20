@@ -33,3 +33,14 @@ test("stripe payment link carries convex user id as client reference", async () 
   assert.equal(url.origin, "https://buy.stripe.com");
   assert.equal(url.searchParams.get("client_reference_id"), "user_123");
 });
+
+test("pre-spotify link detector requires an explicit link request", async () => {
+  const { wantsSpotifyLink } = await import("../src/bot/rotationBot");
+
+  assert.equal(wantsSpotifyLink("send me a fresh spotify link"), true);
+  assert.equal(wantsSpotifyLink("can you help me connect spotify"), true);
+  assert.equal(wantsSpotifyLink("link spotify"), true);
+  assert.equal(wantsSpotifyLink("why do you need spotify?"), false);
+  assert.equal(wantsSpotifyLink("how does linking work?"), false);
+  assert.equal(wantsSpotifyLink("what can you do before i connect"), false);
+});

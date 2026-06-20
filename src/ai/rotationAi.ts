@@ -262,6 +262,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       | "playlist_ready"
       | "help"
       | "not_linked"
+      | "pre_spotify_question"
       | "poll_repeat"
       | "smalltalk"
       | "error";
@@ -276,6 +277,27 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
       providerOptions,
       system: styleGuide,
       prompt: JSON.stringify(args),
+    });
+    return preserveUrlsLowercase(result.text.trim());
+  }
+
+  async preSpotifyReply(userText: string) {
+    const result = await generateText({
+      model: model(),
+      providerOptions,
+      system: styleGuide,
+      prompt: `answer this text from someone who has not connected spotify yet.
+
+facts:
+- rotation makes spotify playlists over text.
+- after spotify is connected, rotation can read their liked songs, playlists, and listening context to make better playlists.
+- it can make activity/mood playlists, find new music, make more like an artist/playlist, or help rediscover old favorites.
+- spotify must be connected before rotation can make playlists or personalize recommendations.
+- rotation is $29.99/y after their first request.
+- do not include an auth link or tell them a link is attached.
+- if they want to connect, tell them to ask for a fresh link when they're ready.
+
+user text: ${userText}`,
     });
     return preserveUrlsLowercase(result.text.trim());
   }

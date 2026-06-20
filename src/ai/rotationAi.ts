@@ -327,7 +327,8 @@ ignore songs from the user's history that do not fit the requested mood/activity
 for balanced/activity playlists, you may pull directly from the user's history when those songs fit the moment, or use the fitting songs as seeds to find adjacent new music.
 think deeply about patterns across the liked songs: recurring artists, microgenres, production texture, era, mood, tempo, vocal style, scenes, and adjacent songs similar in nature.
 for the first rotation / onboarding discovery playlist, do not pick songs the user merely might like. every selected song should feel almost certain to land based on repeated evidence in savedTracks and weighted playlist history.
-for the first rotation / onboarding discovery playlist, prefer fewer but stronger taste bets over speculative variety. cross-genre range is good only when each genre lane is clearly supported by their liked songs.
+for the first rotation / onboarding discovery playlist, prefer fewer but stronger taste bets over speculative variety. cross-genre range is required when each genre lane is clearly supported by their liked songs.
+for the first rotation / onboarding discovery playlist, infer the user's major genre/sound clusters from savedTracks and strong user-owned playlists. any cluster that represents roughly 10 percent or more of the library evidence must be represented. do not collapse the playlist into only one or two genres when their library is broader.
 return search queries that spotify search can actually answer, like artist names, genre words, song/artist combinations, or scene descriptors.
 if the request is under-specified and there are two meaningfully different directions, ask a short multiple choice poll.
 if recentConversation creates ambiguity, use needsPoll with options that separate the fresh interpretation from the carried-over interpretation, like london only vs sad london.
@@ -458,7 +459,9 @@ do not overdo it. no fake flattery. one sentence per message.`,
       system: `${styleGuide}
 
 ${conversationRules}
-${deliveryFacts}`,
+${deliveryFacts}
+if kind is playlist_ready, do not tell the user to check spotify, check their library, wait a second, or look at the top of their library. the app sends the playlist link separately.
+if kind is playlist_ready, do not mention the playlist's track count or number of songs.`,
       prompt: JSON.stringify({
         ...args,
         conversationHistory: undefined,

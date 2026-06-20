@@ -311,6 +311,15 @@ const removePlaylistDeliveryHints = (message: string) => {
   return cleaned || message;
 };
 
+const removePlaylistCounts = (message: string) =>
+  message
+    .replace(
+      /\b\d+\s+(?=(?:fresh|new|deep|off-grid|near-certain|handpicked|songs|tracks|cuts)\b)/gi,
+      "",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
 export const normalizeReaction = (reaction?: string | null) => {
   if (!reaction) return undefined;
   const trimmed = reaction.trim();
@@ -353,8 +362,9 @@ export const formatPlaylistReadyReply = (
 ) => {
   const withoutUrls = removeInlineUrls(reply) || fallback;
   const withoutDeliveryHints = removePlaylistDeliveryHints(withoutUrls);
+  const withoutCounts = removePlaylistCounts(withoutDeliveryHints);
   const withoutDuplicateReaction = removeDuplicateReactionEmoji(
-    withoutDeliveryHints,
+    withoutCounts,
     normalizeReaction(avoidReaction),
   );
   return withoutDuplicateReaction || fallback;
@@ -812,6 +822,41 @@ const uniqueById = <T extends { spotifyTrackId: string }>(tracks: T[]) => {
     if (seen.has(track.spotifyTrackId)) return false;
     seen.add(track.spotifyTrackId);
     return true;
+  });
+};
+
+const normalizedLibraryText = (value: string | undefined) =>
+  normalize(value ?? "")
+    .replace(
+      /\b(remaster(?:ed)?|radio edit|single version|album version|explicit|clean|sped up|slowed|instrumental|live|mono|stereo|bonus track|deluxe|edit|version)\b/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+export const libraryTrackKey = (
+  track: Pick<RotationTrack, "name" | "artists">,
+) => {
+  const title = normalizedLibraryText(track.name);
+  const primaryArtist = normalizedLibraryText(track.artists[0]);
+  return title && primaryArtist ? `${primaryArtist}::${title}` : undefined;
+};
+
+export const filterKnownLibraryTracks = <T extends RotationTrack>(
+  tracks: T[],
+  libraryTracks: Array<Pick<RotationTrack, "spotifyTrackId" | "name" | "artists">>,
+) => {
+  const knownIds = new Set(libraryTracks.map((track) => track.spotifyTrackId));
+  const knownKeys = new Set(
+    libraryTracks
+      .map((track) => libraryTrackKey(track))
+      .filter((key): key is string => Boolean(key)),
+  );
+
+  return tracks.filter((track) => {
+    if (knownIds.has(track.spotifyTrackId)) return false;
+    const key = libraryTrackKey(track);
+    return !key || !knownKeys.has(key);
   });
 };
 
@@ -1478,7 +1523,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      "that first one is 75 songs. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or “more stuff i’d fw” and i'll make it.";
+      "that first one is 75 songs. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.";
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,
@@ -2277,6 +2322,11 @@ export class RotationBot {
         return;
       }
 
+      const finalTargetCount = plan.targetCount;
+      const selectionPlan =
+        args.requestKind === "initial"
+          ? { ...plan, targetCount: Math.min(200, Math.max(plan.targetCount, 80)) }
+          : plan;
       const knownTrackIds = new Set(
         context.tracks.map((track) => track.spotifyTrackId),
       );
@@ -2293,7 +2343,7 @@ export class RotationBot {
         user._id,
         searchQueries,
         knownTrackIds,
-        Math.min(600, Math.max(240, plan.targetCount * 3)),
+        Math.min(600, Math.max(240, selectionPlan.targetCount * 3)),
       );
       const candidates = newOnly
         ? rankDiscoveryCandidates(rawCandidates)
@@ -2301,10 +2351,10 @@ export class RotationBot {
       const familiarTracks = newOnly
         ? []
         : this.familiarTracks(context.tracks, plan.familiarTrackIds);
-      const selected = finalizeSelectedTracks(
+      const selectedWithBuffer = finalizeSelectedTracks(
         await this.selectTracks(
           args.prompt,
-          plan,
+          selectionPlan,
           candidates,
           familiarTracks,
           newOnly,
@@ -2313,6 +2363,12 @@ export class RotationBot {
         [...context.tracks, ...candidates, ...familiarTracks],
         openerQuery,
       );
+      const selected = newOnly
+        ? uniqueById([
+            ...filterKnownLibraryTracks(selectedWithBuffer, context.tracks),
+            ...filterKnownLibraryTracks(candidates, context.tracks),
+          ]).slice(0, finalTargetCount)
+        : selectedWithBuffer.slice(0, finalTargetCount);
 
       if (selected.length === 0) {
         throw new Error("no tracks selected");
@@ -2328,7 +2384,7 @@ export class RotationBot {
         this.spotify.createPlaylist(user, {
           name: plan.playlistName,
           description: plan.playlistDescription,
-          tracks: selected.slice(0, plan.targetCount),
+          tracks: selected,
         }),
         coverPromise,
       ]);

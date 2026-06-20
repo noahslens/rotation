@@ -410,6 +410,13 @@ test("playlist ready formatter removes inline links and repeated reaction emoji"
     ),
     "on it. built the warmup.",
   );
+  assert.equal(
+    formatPlaylistReadyReply(
+      "just spun up your first off-grid rotation. 75 fresh, deep cuts built from your taste but nothing you already know.",
+      "made your first rotation",
+    ),
+    "just spun up your first off-grid rotation. fresh, deep cuts built from your taste but nothing you already know.",
+  );
 });
 
 test("delayed progress formatter says almost done once", async () => {
@@ -462,5 +469,49 @@ test("explicit opener is moved first without deduping same-title tracks", async 
   assert.deepEqual(
     finalized.map((track) => track.spotifyTrackId),
     ["skyfall_adele", "moon_river_1", "moon_river_2"],
+  );
+});
+
+test("known library filter removes alternate ids for existing songs", async () => {
+  const { filterKnownLibraryTracks } = await import("../src/bot/rotationBot");
+  const library = [
+    {
+      spotifyTrackId: "saved_1",
+      name: "Earrings",
+      artists: ["Malcolm Todd"],
+    },
+    {
+      spotifyTrackId: "saved_2",
+      name: "Moon River",
+      artists: ["Frank Ocean"],
+    },
+  ];
+  const candidates = [
+    {
+      spotifyTrackId: "alt_earrings",
+      name: "Earrings - Single Version",
+      artists: ["Malcolm Todd"],
+      uri: "spotify:track:alt_earrings",
+      source: "recommendation" as const,
+    },
+    {
+      spotifyTrackId: "andy_moon_river",
+      name: "Moon River",
+      artists: ["Andy Williams"],
+      uri: "spotify:track:andy_moon_river",
+      source: "recommendation" as const,
+    },
+    {
+      spotifyTrackId: "new_song",
+      name: "Something New",
+      artists: ["Malcolm Todd"],
+      uri: "spotify:track:new_song",
+      source: "recommendation" as const,
+    },
+  ];
+
+  assert.deepEqual(
+    filterKnownLibraryTracks(candidates, library).map((track) => track.spotifyTrackId),
+    ["andy_moon_river", "new_song"],
   );
 });

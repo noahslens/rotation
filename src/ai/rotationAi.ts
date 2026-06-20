@@ -45,6 +45,8 @@ const playlistJudgmentRules = [
   "for social, party, school, graduation, birthday, wedding, pregame, trip, pool, beach, barbecue, or group settings, the event and room can outrank the user's normal taste, especially for the first 5 to 10 songs.",
   "include culturally obvious anchors, era staples, event staples, and crowd layups when they fit the situation, even if they are not usually the user's exact taste, unless the user explicitly asks for obscure, deep cuts, or new music only.",
   "choose the opener deliberately. track 1 should be the most situation-perfect tone setter, not merely the strongest personal taste match. in a group setting it should feel immediate, recognizable, and playable.",
+  "if the user explicitly names a first track, opener, or start-with song, put that exact recording first once. do not include alternate versions, covers, remixes, or repeated versions of that song unless the user explicitly asks for multiple versions.",
+  "avoid repeated versions of the same song title in one playlist.",
   "for culturally obvious requests, include exact song and artist search queries for must-consider anchors so spotify can return them. for example, a high school graduation pool party should consider the spins mac miller plus sunny graduation, pool, senior summer, and party staples.",
   "after the essential situation anchors are covered, use the user's taste to shape texture, adjacent picks, sequencing, and deeper cuts.",
 ].join("\n");

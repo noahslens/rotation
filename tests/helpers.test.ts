@@ -226,3 +226,43 @@ test("playlist ready formatter removes inline links and repeated reaction emoji"
     "made pool party",
   );
 });
+
+test("explicit opener is moved first without deduping same-title tracks", async () => {
+  const { explicitOpenerQuery, finalizeSelectedTracks } = await import("../src/bot/rotationBot");
+  const skyfall = {
+    spotifyTrackId: "skyfall_adele",
+    name: "Skyfall",
+    artists: ["Adele"],
+    uri: "spotify:track:skyfall_adele",
+    source: "recommendation" as const,
+  };
+  const moonRiverOne = {
+    spotifyTrackId: "moon_river_1",
+    name: "Moon River",
+    artists: ["Frank Ocean"],
+    uri: "spotify:track:moon_river_1",
+    source: "recommendation" as const,
+  };
+  const moonRiverTwo = {
+    spotifyTrackId: "moon_river_2",
+    name: "Moon River",
+    artists: ["Andy Williams"],
+    uri: "spotify:track:moon_river_2",
+    source: "recommendation" as const,
+  };
+
+  const opener = explicitOpenerQuery(
+    "late night rainy vibe playlist. first track skyfall adele",
+  );
+  const finalized = finalizeSelectedTracks(
+    [moonRiverOne, moonRiverTwo],
+    [moonRiverOne, moonRiverTwo, skyfall],
+    opener,
+  );
+
+  assert.equal(opener, "skyfall adele");
+  assert.deepEqual(
+    finalized.map((track) => track.spotifyTrackId),
+    ["skyfall_adele", "moon_river_1", "moon_river_2"],
+  );
+});

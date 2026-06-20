@@ -20,6 +20,47 @@ export const logTurn = mutation({
   },
 });
 
+export const claimInboundMessage = mutation({
+  args: {
+    userId: v.id("users"),
+    text: v.string(),
+    messageId: v.optional(v.string()),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    if (args.messageId) {
+      const existing = await ctx.db
+        .query("conversationTurns")
+        .withIndex("by_user_message", (q) =>
+          q.eq("userId", args.userId).eq("messageId", args.messageId),
+        )
+        .first();
+      if (existing) {
+        return { claimed: false, turnId: existing._id };
+      }
+    }
+
+    const turnId = await ctx.db.insert("conversationTurns", {
+      userId: args.userId,
+      direction: "in",
+      text: args.text,
+      messageId: args.messageId,
+      createdAt: args.now,
+    });
+    return { claimed: true, turnId };
+  },
+});
+
+export const updateTurnText = mutation({
+  args: {
+    turnId: v.id("conversationTurns"),
+    text: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.turnId, { text: args.text });
+  },
+});
+
 export const recentTurns = query({
   args: {
     userId: v.id("users"),

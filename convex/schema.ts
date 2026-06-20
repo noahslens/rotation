@@ -147,7 +147,8 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_user", ["userId"])
-    .index("by_user_created", ["userId", "createdAt"]),
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_user_message", ["userId", "messageId"]),
 
   pendingPolls: defineTable({
     userId: v.id("users"),

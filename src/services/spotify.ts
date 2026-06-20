@@ -98,6 +98,13 @@ const compactDescription = (value: string | null | undefined) => {
   return withoutTags || undefined;
 };
 
+const spotifyPlainText = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[\u2014\u2013]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const mapTrack = (
   track: SpotifyTrack | null | undefined,
   source: RotationTrack["source"],
@@ -316,8 +323,8 @@ export class SpotifyService {
     }>(user._id, "/me/playlists", {
       method: "POST",
       body: JSON.stringify({
-        name: input.name.slice(0, 100),
-        description: input.description.slice(0, 300),
+        name: (spotifyPlainText(input.name) || "rotation").slice(0, 100),
+        description: spotifyPlainText(input.description).slice(0, 300),
         public: input.isPublic ?? false,
       }),
     });

@@ -3,6 +3,9 @@ import { imessage } from "@spectrum-ts/imessage";
 import { requireEnv } from "./config/env";
 import { startBackgroundJobs } from "./bot/background";
 import { createRotationBot } from "./bot/rotationBot";
+import { acquireProcessLock } from "./utils/processLock";
+
+const workerLock = acquireProcessLock("rotation-worker");
 
 const app = await Spectrum({
   projectId: requireEnv("projectId"),
@@ -28,6 +31,7 @@ console.info("[rotation.startup]", {
 const shutdown = async () => {
   stopBackgroundJobs();
   await app.stop();
+  workerLock.release();
   process.exit(0);
 };
 

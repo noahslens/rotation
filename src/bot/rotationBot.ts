@@ -1,5 +1,6 @@
 import type { Message, Space, SpectrumInstance } from "spectrum-ts";
 import {
+  app as appCard,
   attachment,
   contact,
   poll,
@@ -389,6 +390,58 @@ const normalize = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+export const explicitOpenerQuery = (prompt: string) => {
+  const compact = prompt.replace(/\s+/g, " ").trim();
+  const match =
+    compact.match(/\b(?:first|1st)\s+(?:track|song)\s*(?:is|:|-)?\s+(.+)$/i) ??
+    compact.match(/\b(?:start|open|lead off)\s+(?:with|w\/)\s+(.+)$/i);
+  const query = match?.[1]
+    ?.replace(/\b(?:then|and then|after that)\b.*$/i, "")
+    .replace(/[.!?]+$/g, "")
+    .trim();
+  return query ? query.slice(0, 120) : undefined;
+};
+
+const openerScore = (track: RotationTrack, query: string) => {
+  const normalizedQuery = normalize(query);
+  const name = normalize(track.name);
+  if (!normalizedQuery || !name) return 0;
+
+  let score = normalizedQuery.includes(name) ? 80 : 0;
+  const artistText = normalize(track.artists.join(" "));
+  for (const artist of track.artists) {
+    const normalizedArtist = normalize(artist);
+    if (normalizedArtist && normalizedQuery.includes(normalizedArtist)) {
+      score += 35;
+      break;
+    }
+  }
+  if (artistText && normalizedQuery.includes(artistText)) score += 15;
+  return score + (track.popularity ?? 0) / 100;
+};
+
+const findExplicitOpener = (tracks: RotationTrack[], query: string) => {
+  const [best] = tracks
+    .map((track) => ({ track, score: openerScore(track, query) }))
+    .filter(({ score }) => score >= 80)
+    .sort((left, right) => right.score - left.score);
+  return best?.track;
+};
+
+export const finalizeSelectedTracks = (
+  selected: RotationTrack[],
+  pool: RotationTrack[],
+  openerQuery?: string,
+) => {
+  if (!openerQuery) return selected;
+  const opener = findExplicitOpener(pool, openerQuery);
+  if (!opener) return selected;
+  return [
+    opener,
+    ...selected.filter((track) => track.spotifyTrackId !== opener.spotifyTrackId),
+  ];
+};
+
 const greetingPrefix = (text: string) => {
   const clean = normalize(text);
   if (/^(hi|hii|hiii|hiya)\b/.test(clean)) return "hi";
@@ -620,13 +673,19 @@ export class RotationBot {
     });
     if (!user) return;
 
-    await convex.mutation(api.conversation.logTurn, {
+    const claim = await convex.mutation(api.conversation.claimInboundMessage, {
       userId: user._id,
-      direction: "in",
       text: message.content.text,
       messageId: message.id,
       now,
     });
+    if (!claim.claimed) {
+      console.info("[rotation.duplicate_inbound_skipped]", {
+        userId: user._id,
+        messageId: message.id,
+      });
+      return;
+    }
 
     try {
       await message.read().catch((caught) => {
@@ -655,13 +714,14 @@ export class RotationBot {
     });
     if (!user) return;
 
-    await convex.mutation(api.conversation.logTurn, {
+    const claim = await convex.mutation(api.conversation.claimInboundMessage, {
       userId: user._id,
-      direction: "in",
       text: tapbackLogText(message),
       messageId: message.id,
       now,
     });
+    if (!claim.claimed) return;
+
     await message.read().catch((caught) => {
       console.warn("[rotation.tapback_read_failed]", compactError(caught));
     });
@@ -686,6 +746,20 @@ export class RotationBot {
     });
     if (!existingVoiceUser) return;
     let user: Doc<"users"> = existingVoiceUser;
+    const claim = await convex.mutation(api.conversation.claimInboundMessage, {
+      userId: user._id,
+      text: "voice note: audio",
+      messageId: message.id,
+      now,
+    });
+    if (!claim.claimed) {
+      console.info("[rotation.duplicate_inbound_skipped]", {
+        userId: user._id,
+        messageId: message.id,
+      });
+      return;
+    }
+    const inboundTurnId = claim.turnId;
 
     try {
       await message.read().catch((caught) => {
@@ -719,7 +793,7 @@ export class RotationBot {
           preSpotify: true,
           conversationHistory,
         });
-        await this.logVoiceTurn(user._id, message.id, now, action.promptText);
+        await this.logVoiceTurn(user._id, message.id, now, action.promptText, inboundTurnId);
         await this.withTyping(space, async () => {
           await this.sendGreeting(space, user, action.promptText || "hi");
         });
@@ -733,7 +807,7 @@ export class RotationBot {
           preSpotify: true,
           conversationHistory,
         });
-        await this.logVoiceTurn(user._id, message.id, now, action.promptText);
+        await this.logVoiceTurn(user._id, message.id, now, action.promptText, inboundTurnId);
 
         if (action.wantsSpotifyLink) {
           await this.withTyping(space, async () => {
@@ -770,7 +844,7 @@ export class RotationBot {
         conversationHistory,
       });
       const promptText = action.promptText || "voice note";
-      await this.logVoiceTurn(user._id, message.id, now, promptText);
+      await this.logVoiceTurn(user._id, message.id, now, promptText, inboundTurnId);
 
       if (action.intent === "help") {
         await this.withTyping(space, async () => {
@@ -867,11 +941,20 @@ export class RotationBot {
     messageId: string | undefined,
     now: number,
     promptText: string | undefined,
+    turnId?: Id<"conversationTurns">,
   ) {
+    const text = `voice note: ${promptText || "audio"}`;
+    if (turnId) {
+      await convex.mutation(api.conversation.updateTurnText, {
+        turnId,
+        text,
+      });
+      return;
+    }
     await convex.mutation(api.conversation.logTurn, {
       userId,
       direction: "in",
-      text: `voice note: ${promptText || "audio"}`,
+      text,
       messageId,
       now,
     });
@@ -894,13 +977,19 @@ export class RotationBot {
     if (!user) return;
 
     const names = photoAttachments.map((photo) => photo.name).join(", ");
-    await convex.mutation(api.conversation.logTurn, {
+    const claim = await convex.mutation(api.conversation.claimInboundMessage, {
       userId: user._id,
-      direction: "in",
       text: `uploaded ${photoAttachments.length} photo${photoAttachments.length === 1 ? "" : "s"}: ${names}`,
       messageId: message.id,
       now,
     });
+    if (!claim.claimed) {
+      console.info("[rotation.duplicate_inbound_skipped]", {
+        userId: user._id,
+        messageId: message.id,
+      });
+      return;
+    }
 
     await message.read().catch((caught) => {
       console.warn("[rotation.photo_read_failed]", compactError(caught));
@@ -1452,9 +1541,18 @@ export class RotationBot {
       const knownTrackIds = new Set(
         context.tracks.map((track) => track.spotifyTrackId),
       );
+      const openerQuery = explicitOpenerQuery(args.prompt);
+      const searchQueries = openerQuery
+        ? [
+            openerQuery,
+            ...plan.searchQueries.filter(
+              (query) => normalize(query) !== normalize(openerQuery),
+            ),
+          ]
+        : plan.searchQueries;
       const rawCandidates = await this.spotify.searchTracks(
         user._id,
-        plan.searchQueries,
+        searchQueries,
         knownTrackIds,
         Math.min(600, Math.max(240, plan.targetCount * 3)),
       );
@@ -1464,13 +1562,17 @@ export class RotationBot {
       const familiarTracks = newOnly
         ? []
         : this.familiarTracks(context.tracks, plan.familiarTrackIds);
-      const selected = await this.selectTracks(
-        args.prompt,
-        plan,
-        candidates,
-        familiarTracks,
-        newOnly,
-        args.conversationHistory,
+      const selected = finalizeSelectedTracks(
+        await this.selectTracks(
+          args.prompt,
+          plan,
+          candidates,
+          familiarTracks,
+          newOnly,
+          args.conversationHistory,
+        ),
+        [...context.tracks, ...candidates, ...familiarTracks],
+        openerQuery,
       );
 
       if (selected.length === 0) {
@@ -1834,14 +1936,14 @@ export class RotationBot {
 
   private async sendPlaylistLink(space: Space, user: Doc<"users">, url: string) {
     try {
-      await sendWithRetry(space, richlink(url));
-      await outbound(user._id, "sent playlist richlink");
+      await sendWithRetry(space, appCard(url));
+      await outbound(user._id, "sent playlist app card");
     } catch (caught) {
-      console.warn("[rotation.playlist_richlink_failed]", compactError(caught));
+      console.warn("[rotation.playlist_app_card_failed]", compactError(caught));
       await sendLogged(
         space,
         user._id,
-        "the spotify preview didn't send cleanly, but it's at the top of your spotify library. ask me to resend and i'll try again.",
+        "the spotify card didn't send cleanly, but it's at the top of your spotify library. ask me to resend and i'll try again.",
       );
     }
   }

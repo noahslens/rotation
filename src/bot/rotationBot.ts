@@ -43,7 +43,6 @@ const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
 const initialProgressStaleMs = 5 * 60 * 1000;
-const progressContextPollScheduleMs = [8_000, 10_000, 15_000, 20_000, 30_000, 45_000];
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -2679,25 +2678,8 @@ export class RotationBot {
       }
     };
 
-    const startProgressContextPolling = () => {
-      void (async () => {
-        for (const delayMs of progressContextPollScheduleMs) {
-          if (playlistLinkSent || tasteProgressSent) return;
-          await sleep(delayMs);
-          if (playlistLinkSent || tasteProgressSent) return;
-          const partialContext = await this.fullMusicContext(user._id);
-          if (partialContext.tracks.length < 50) continue;
-          await captureProgressMessages(partialContext);
-          return;
-        }
-      })().catch((caught) => {
-        console.warn("[rotation.progress_context_poll_failed]", compactError(caught));
-      });
-    };
-
     try {
       if (args.sendProgress) {
-        startProgressContextPolling();
         readySoonProgressTimer = setTimeout(() => {
           if (playlistLinkSent || readySoonProgressSent) return;
           readySoonProgressSent = true;

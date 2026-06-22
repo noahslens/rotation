@@ -1,5 +1,6 @@
 import { google } from "@ai-sdk/google";
 import { anthropic } from "@ai-sdk/anthropic";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -22,8 +23,13 @@ export type ConversationTurn = {
 const model = () => google(env.geminiModel);
 const coverModel = () => google(env.geminiCoverModel);
 export type PlaylistAiProvider = "gemini" | "sonnet";
+const openRouter = () => createOpenRouter({ apiKey: env.openRouterApiKey });
 const playlistModel = (provider: PlaylistAiProvider = "gemini") =>
-  provider === "sonnet" ? anthropic(env.anthropicPlaylistModel) : model();
+  provider === "sonnet"
+    ? env.openRouterApiKey
+      ? openRouter()(env.openRouterPlaylistModel)
+      : anthropic(env.anthropicPlaylistModel)
+    : model();
 const providerOptions = {
   google: {
     thinkingConfig: {

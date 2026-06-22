@@ -430,7 +430,7 @@ const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
 const readySoonProgressMessage = "still working. it'll be ready soon.";
 const playlistProviders = (): PlaylistAiProvider[] =>
-  env.anthropicApiKey ? ["gemini", "sonnet"] : ["gemini"];
+  env.openRouterApiKey || env.anthropicApiKey ? ["gemini", "sonnet"] : ["gemini"];
 const playlistProviderLabel = (provider: PlaylistAiProvider) =>
   provider === "sonnet" ? "sonnet" : "gemini";
 const ordinalLabel = (index: number) =>

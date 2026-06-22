@@ -32,6 +32,7 @@ export const env = {
   googleApiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
   geminiCoverModel: process.env.GEMINI_COVER_MODEL ?? "gemini-3.5-flash",
+  geminiSelectorModel: process.env.GEMINI_SELECTOR_MODEL ?? "gemini-2.5-flash-lite",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   anthropicPlaylistModel,
   openRouterApiKey: process.env.OPENROUTER_API_KEY ?? "",

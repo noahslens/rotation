@@ -3088,7 +3088,6 @@ export class RotationBot {
         args.newOnly,
         familiarPercent,
         args.conversationHistory,
-        args.provider,
       ),
       [...args.context.tracks, ...candidates, ...familiarTracks],
       openerQuery,
@@ -3180,7 +3179,6 @@ export class RotationBot {
     newOnly: boolean,
     familiarMixPercent?: number,
     conversationHistory?: ConversationTurn[],
-    provider: PlaylistAiProvider = "gemini",
   ) {
     const chosen = await this.ai.chooseTracks({
       prompt,
@@ -3190,7 +3188,6 @@ export class RotationBot {
       newOnly,
       familiarMixPercent,
       conversationHistory,
-      provider,
     });
     const byId = new Map<string, RotationTrack>();
     for (const track of (newOnly ? candidates : [...candidates, ...familiarTracks])) {

@@ -22,6 +22,7 @@ export type ConversationTurn = {
 
 const model = () => google(env.geminiModel);
 const coverModel = () => google(env.geminiCoverModel);
+const selectorModel = () => google(env.geminiSelectorModel);
 export type PlaylistAiProvider = "gemini" | "sonnet";
 const openRouter = () => createOpenRouter({ apiKey: env.openRouterApiKey });
 const playlistModel = (provider: PlaylistAiProvider = "gemini") =>
@@ -50,6 +51,9 @@ const playlistGenerationSettings = (
     : {
         temperature: 1,
       };
+const selectorGenerationSettings = {
+  temperature: 0.35,
+};
 
 const styleGuide = [
   "you are rotation, a music concierge that texts like a sharp friend.",
@@ -517,16 +521,19 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     newOnly?: boolean;
     familiarMixPercent?: number;
     conversationHistory?: ConversationTurn[];
-    provider?: PlaylistAiProvider;
   }) {
-    const provider = args.provider ?? "gemini";
+    const familiarLimit = args.newOnly
+      ? 80
+      : Math.min(320, Math.max(80, args.plan.targetCount * 2));
     const result = await generateObject({
-      model: playlistModel(provider),
+      model: selectorModel(),
       schema: selectedTracksSchema,
-      ...playlistGenerationSettings(provider),
+      ...selectorGenerationSettings,
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
+you are only selecting ids from provided spotify search candidates and a compact familiar reference set.
+do not need or expect the user's full liked-song history here. the playlist plan already contains the taste strategy.
 ${playlistJudgmentRules}
 ${conversationRules}
 selectedTrackIds is ordered playlist sequencing. the first id becomes track 1 in spotify.
@@ -553,7 +560,9 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
           targetCount: args.plan.targetCount,
           recentConversation: conversationForModel(args.conversationHistory),
           candidates: args.candidates.slice(0, 320).map(compactTrack),
-          familiarTracks: args.familiarTracks.map(compactTrack),
+          familiarTracks: args.familiarTracks
+            .slice(0, familiarLimit)
+            .map(compactTrack),
         },
       ),
     });

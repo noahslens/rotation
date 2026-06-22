@@ -1,7 +1,13 @@
 import { config } from "dotenv";
 
+const runtimeProjectId = process.env.PROJECT_ID;
+const runtimeProjectSecret = process.env.PROJECT_SECRET;
+
 config({ path: ".env" });
 config({ path: ".env.local", override: true });
+
+if (runtimeProjectId) process.env.PROJECT_ID = runtimeProjectId;
+if (runtimeProjectSecret) process.env.PROJECT_SECRET = runtimeProjectSecret;
 
 if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;

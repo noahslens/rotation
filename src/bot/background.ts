@@ -4,6 +4,14 @@ import { api, convex } from "../state/convex";
 import type { RotationApp, RotationBot } from "./rotationBot";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export const initialRetryCooldownMs = 60 * 60 * 1000;
+export const shouldProcessInitialPlaylist = (
+  item: Pick<Doc<"users">, "initialPlaylistDeliveredAt" | "initialPlaylistStartedAt">,
+  now: number,
+) =>
+  !item.initialPlaylistDeliveredAt &&
+  (!item.initialPlaylistStartedAt ||
+    now - item.initialPlaylistStartedAt >= initialRetryCooldownMs);
 const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) =>
   await Promise.race([
     promise,
@@ -38,8 +46,11 @@ export const startBackgroundJobs = (app: RotationApp, bot: RotationBot) => {
   const initialLoop = async () => {
     while (running) {
       await run("initial", async () => {
+        const now = Date.now();
         const users = await convex.query(api.users.listLinkedUsers, { limit: 50 });
-        const pending = users.filter((item) => !item.initialPlaylistDeliveredAt);
+        const pending = users.filter((item) =>
+          shouldProcessInitialPlaylist(item, now),
+        );
         if (pending.length) {
           console.info("[background:initial] pending users", {
             count: pending.length,

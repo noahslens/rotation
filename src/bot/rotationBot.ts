@@ -42,7 +42,7 @@ const weekMs = 7 * dayMs;
 const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
-const initialProgressStaleMs = 5 * 60 * 1000;
+const initialRetryCooldownMs = 60 * 60 * 1000;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -1862,15 +1862,24 @@ export class RotationBot {
   async deliverInitialPlaylist(space: Space, user: Doc<"users">) {
     if (!user.spotifyLinked || user.initialPlaylistDeliveredAt) return;
     const now = Date.now();
-    const sendProgress =
-      !user.initialPlaylistStartedAt ||
-      now - user.initialPlaylistStartedAt > initialProgressStaleMs;
+    const isFirstAttempt = !user.initialPlaylistStartedAt;
+    const isRecentAttempt =
+      Boolean(user.initialPlaylistStartedAt) &&
+      now - (user.initialPlaylistStartedAt ?? 0) < initialRetryCooldownMs;
+    if (!isFirstAttempt && isRecentAttempt) {
+      console.info("[rotation.initial] skip recent attempt", {
+        userId: user._id,
+        initialPlaylistStartedAt: user.initialPlaylistStartedAt,
+      });
+      return;
+    }
+    const sendProgress = isFirstAttempt;
     console.info("[rotation.initial] start", {
       userId: user._id,
       initialPlaylistStartedAt: user.initialPlaylistStartedAt,
       sendProgress,
     });
-    if (!user.initialPlaylistStartedAt) {
+    if (isFirstAttempt) {
       await sendLogged(space, user._id, fallbackCopy.linked);
       await sendLogged(
         space,
@@ -1881,7 +1890,7 @@ export class RotationBot {
         userId: user._id,
         now: Date.now(),
       });
-    } else if (sendProgress) {
+    } else {
       await convex.mutation(api.users.markInitialPlaylistStarted, {
         userId: user._id,
         now,
@@ -2698,8 +2707,9 @@ export class RotationBot {
         void captureProgressMessages(context);
       }
       const newOnly = shouldUseNewOnly(args);
-      const providerPlans = await Promise.all(
-        playlistProviders().map(async (provider) => {
+      const providers = playlistProviders();
+      const providerPlanResults = await Promise.allSettled(
+        providers.map(async (provider) => {
           const rawPlan =
             provider === "gemini" && args.precomputedPlan
               ? args.precomputedPlan
@@ -2723,6 +2733,15 @@ export class RotationBot {
           };
         }),
       );
+      const providerPlans = providerPlanResults.flatMap((result, index) => {
+        const provider = providers[index] ?? "gemini";
+        if (result.status === "fulfilled") return [result.value];
+        console.warn("[rotation.playlist_plan_failed]", {
+          provider,
+          error: compactError(result.reason),
+        });
+        return [];
+      });
       const pollPlan = providerPlans.find(
         ({ plan }) => plan.needsPoll && plan.pollQuestion && plan.pollOptions?.length,
       )?.plan;
@@ -2759,7 +2778,7 @@ export class RotationBot {
         console.warn("[rotation.cover_prepare_failed]", compactError(caught));
         return null;
       });
-      const variants = await Promise.all(
+      const variantResults = await Promise.allSettled(
         providerPlans.map(({ provider, label, plan }) =>
           this.createPlaylistVariant({
             provider,
@@ -2775,6 +2794,16 @@ export class RotationBot {
           }),
         ),
       );
+      const variants = variantResults.flatMap((result, index) => {
+        const provider = providerPlans[index]?.provider ?? "gemini";
+        if (result.status === "fulfilled") return [result.value];
+        console.warn("[rotation.playlist_variant_failed]", {
+          provider,
+          error: compactError(result.reason),
+        });
+        return [];
+      });
+      if (variants.length === 0) throw new Error("no playlist variants created");
       const cover = await coverPromise;
       if (cover) {
         let markedPhotoUsed = false;

@@ -110,15 +110,15 @@ const intentSchema = z.object({
 
 const playlistPlanSchema = z.object({
   needsPoll: z.boolean(),
-  pollQuestion: z.string().max(120).optional(),
-  pollOptions: z.array(z.string().max(40)).min(2).max(4).optional(),
-  playlistName: z.string().min(1).max(80),
-  playlistDescription: z.string().min(1).max(240),
+  pollQuestion: z.string().max(300).optional(),
+  pollOptions: z.array(z.string().max(100)).min(2).max(10).optional(),
+  playlistName: z.string().min(1).max(200),
+  playlistDescription: z.string().min(1).max(1000),
   targetCount: z.number().int().min(8).max(200),
-  searchQueries: z.array(z.string().min(2).max(120)).min(4).max(40),
-  familiarTrackIds: z.array(z.string()).max(200),
-  vibe: z.string().max(160),
-  userFacingSummary: z.string().min(1).max(320),
+  searchQueries: z.array(z.string().min(2).max(200)).min(1).max(120),
+  familiarTrackIds: z.array(z.string()).max(1000),
+  vibe: z.string().max(1000),
+  userFacingSummary: z.string().min(1).max(2000),
 });
 
 const playlistEditPlanSchema = z.object({
@@ -320,6 +320,74 @@ ${JSON.stringify(payload)}
 
 user request: ${userPrompt}`;
 
+type PlaylistPlanObject = z.infer<typeof playlistPlanSchema>;
+
+const compactString = (
+  value: string | null | undefined,
+  maxLength: number,
+  fallback = "",
+) => {
+  const clean = preserveUrlsLowercase(value?.trim() || fallback).replace(/\s+/g, " ");
+  if (clean.length <= maxLength) return clean;
+  return clean.slice(0, maxLength).trimEnd();
+};
+
+const uniqueStrings = (values: string[]) => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const clean = value.trim();
+    const key = clean.toLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+};
+
+const normalizePlaylistPlan = (
+  plan: PlaylistPlanObject,
+  args: { prompt: string; defaultCount: number; fixedTargetCount?: boolean },
+): PlaylistPlanObject => {
+  const pollOptions = plan.pollOptions
+    ? uniqueStrings(
+        plan.pollOptions
+          .map((option) => compactString(option, 40))
+          .filter(Boolean),
+      ).slice(0, 4)
+    : undefined;
+  const pollQuestion = compactString(plan.pollQuestion, 120);
+  const searchQueries = uniqueStrings(
+    plan.searchQueries.map((query) => compactString(query, 120)).filter(Boolean),
+  ).slice(0, 40);
+  const fallbackQuery = compactString(args.prompt, 120, "music discovery");
+  const targetCount = args.fixedTargetCount
+    ? args.defaultCount
+    : Math.max(8, Math.min(200, Math.round(plan.targetCount || args.defaultCount)));
+
+  return {
+    needsPoll: Boolean(plan.needsPoll && pollQuestion && (pollOptions?.length ?? 0) >= 2),
+    pollQuestion: pollQuestion || undefined,
+    pollOptions:
+      pollOptions && pollOptions.length >= 2 ? pollOptions : undefined,
+    playlistName: compactString(plan.playlistName, 80, "rotation"),
+    playlistDescription: compactString(
+      plan.playlistDescription,
+      240,
+      "made by rotation",
+    ),
+    targetCount,
+    searchQueries: searchQueries.length ? searchQueries : [fallbackQuery],
+    familiarTrackIds: uniqueStrings(plan.familiarTrackIds).slice(0, 200),
+    vibe: compactString(plan.vibe, 160),
+    userFacingSummary: compactString(
+      plan.userFacingSummary,
+      320,
+      "made this from your taste.",
+    ),
+  };
+};
+
 export class RotationAi {
   async classify(args: {
     message: string;
@@ -428,7 +496,11 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       ),
     });
 
-    return result.object;
+    return normalizePlaylistPlan(result.object, {
+      prompt: args.prompt,
+      defaultCount: args.defaultCount,
+      fixedTargetCount: args.fixedTargetCount,
+    });
   }
 
   async chooseTracks(args: {

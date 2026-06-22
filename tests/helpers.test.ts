@@ -508,6 +508,30 @@ test("delayed progress formatter says almost done once", async () => {
   );
 });
 
+test("initial playlist background retries cool down started jobs", async () => {
+  const { initialRetryCooldownMs, shouldProcessInitialPlaylist } = await import(
+    "../src/bot/background"
+  );
+  const now = 10_000_000;
+
+  assert.equal(shouldProcessInitialPlaylist({}, now), true);
+  assert.equal(
+    shouldProcessInitialPlaylist({ initialPlaylistDeliveredAt: now - 1 }, now),
+    false,
+  );
+  assert.equal(
+    shouldProcessInitialPlaylist({ initialPlaylistStartedAt: now - 30_000 }, now),
+    false,
+  );
+  assert.equal(
+    shouldProcessInitialPlaylist(
+      { initialPlaylistStartedAt: now - initialRetryCooldownMs - 1 },
+      now,
+    ),
+    true,
+  );
+});
+
 test("explicit opener is moved first without deduping same-title tracks", async () => {
   const { explicitOpenerQuery, finalizeSelectedTracks } = await import("../src/bot/rotationBot");
   const skyfall = {

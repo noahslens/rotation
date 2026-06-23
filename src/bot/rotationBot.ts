@@ -3195,23 +3195,33 @@ export class RotationBot {
     familiarMixPercent?: number,
     conversationHistory?: ConversationTurn[],
   ) {
-    const chosen = await this.ai.chooseTracks({
-      prompt,
-      plan,
-      candidates,
-      familiarTracks,
-      newOnly,
-      familiarMixPercent,
-      conversationHistory,
-    });
     const byId = new Map<string, RotationTrack>();
     for (const track of (newOnly ? candidates : [...candidates, ...familiarTracks])) {
       byId.set(track.spotifyTrackId, track);
     }
 
-    const selected = chosen.selectedTrackIds
-      .map((id) => byId.get(id))
-      .filter((track): track is RotationTrack => Boolean(track));
+    let selected: RotationTrack[] = [];
+    try {
+      const chosen = await this.ai.chooseTracks({
+        prompt,
+        plan,
+        candidates,
+        familiarTracks,
+        newOnly,
+        familiarMixPercent,
+        conversationHistory,
+      });
+      selected = chosen.selectedTrackIds
+        .map((id) => byId.get(id))
+        .filter((track): track is RotationTrack => Boolean(track));
+    } catch (caught) {
+      console.warn("[rotation.track_selection_failed]", {
+        error: compactError(caught),
+        candidateCount: candidates.length,
+        familiarCount: familiarTracks.length,
+        newOnly,
+      });
+    }
 
     const filled = newOnly
       ? uniqueById([...selected, ...candidates.slice(0, plan.targetCount)])

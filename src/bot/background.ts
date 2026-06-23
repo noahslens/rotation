@@ -6,9 +6,13 @@ import type { RotationApp, RotationBot } from "./rotationBot";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const initialRetryCooldownMs = 60 * 60 * 1000;
 export const shouldProcessInitialPlaylist = (
-  item: Pick<Doc<"users">, "initialPlaylistDeliveredAt" | "initialPlaylistStartedAt">,
+  item: Pick<
+    Doc<"users">,
+    "onboardingStage" | "initialPlaylistDeliveredAt" | "initialPlaylistStartedAt"
+  >,
   now: number,
 ) =>
+  item.onboardingStage === "linked" &&
   !item.initialPlaylistDeliveredAt &&
   (!item.initialPlaylistStartedAt ||
     now - item.initialPlaylistStartedAt >= initialRetryCooldownMs);

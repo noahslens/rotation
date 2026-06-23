@@ -514,18 +514,28 @@ test("initial playlist background retries cool down started jobs", async () => {
   );
   const now = 10_000_000;
 
-  assert.equal(shouldProcessInitialPlaylist({}, now), true);
+  assert.equal(shouldProcessInitialPlaylist({ onboardingStage: "linked" }, now), true);
+  assert.equal(shouldProcessInitialPlaylist({ onboardingStage: "new" }, now), false);
   assert.equal(
-    shouldProcessInitialPlaylist({ initialPlaylistDeliveredAt: now - 1 }, now),
-    false,
-  );
-  assert.equal(
-    shouldProcessInitialPlaylist({ initialPlaylistStartedAt: now - 30_000 }, now),
+    shouldProcessInitialPlaylist(
+      { onboardingStage: "linked", initialPlaylistDeliveredAt: now - 1 },
+      now,
+    ),
     false,
   );
   assert.equal(
     shouldProcessInitialPlaylist(
-      { initialPlaylistStartedAt: now - initialRetryCooldownMs - 1 },
+      { onboardingStage: "linked", initialPlaylistStartedAt: now - 30_000 },
+      now,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldProcessInitialPlaylist(
+      {
+        onboardingStage: "linked",
+        initialPlaylistStartedAt: now - initialRetryCooldownMs - 1,
+      },
       now,
     ),
     true,

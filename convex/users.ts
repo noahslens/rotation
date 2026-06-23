@@ -131,6 +131,7 @@ export const restartInitialPlaylistByPlatformUser = mutation({
     platform: v.string(),
     platformUserId: v.string(),
     now: v.number(),
+    replayOnboarding: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db
@@ -152,10 +153,12 @@ export const restartInitialPlaylistByPlatformUser = mutation({
       .query("recommendationRequests")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .take(100);
+    const replayOnboarding = args.replayOnboarding ?? false;
     const initialRequests = requests.filter(
       (request) =>
         request.intent === "initial" &&
-        (request.status === "started" ||
+        (replayOnboarding ||
+          request.status === "started" ||
           request.status === "polling" ||
           request.status === "failed"),
     );
@@ -165,9 +168,19 @@ export const restartInitialPlaylistByPlatformUser = mutation({
     }
 
     await ctx.db.patch(user._id, {
-      onboardingStage: user.spotifyLinked ? "linked" : user.onboardingStage,
+      onboardingStage: replayOnboarding
+        ? "new"
+        : user.spotifyLinked
+          ? "linked"
+          : user.onboardingStage,
       initialPlaylistStartedAt: undefined,
       initialPlaylistDeliveredAt: undefined,
+      ...(replayOnboarding
+        ? {
+            hasSeenPaywall: false,
+            completedRequestCount: 0,
+          }
+        : {}),
       updatedAt: args.now,
     });
 
@@ -177,6 +190,7 @@ export const restartInitialPlaylistByPlatformUser = mutation({
       spotifyLinked: user.spotifyLinked,
       lastSpotifySyncAt: user.lastSpotifySyncAt,
       deletedRequests: initialRequests.length,
+      replayOnboarding,
     };
   },
 });

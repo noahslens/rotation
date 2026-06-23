@@ -1516,6 +1516,14 @@ export class RotationBot {
         await this.withTyping(space, async () => {
           await this.sendGreeting(space, user, action.promptText || "hi");
         });
+        if (user.spotifyLinked) {
+          const latest = await convex.query(api.users.getById, { userId: user._id });
+          if (latest) {
+            await this.withTyping(space, async () => {
+              await this.deliverInitialPlaylist(space, latest);
+            });
+          }
+        }
         return;
       }
 
@@ -1968,6 +1976,14 @@ export class RotationBot {
       await this.withTyping(space, async () => {
         await this.sendGreeting(space, user, text);
       });
+      if (user.spotifyLinked) {
+        const latest = await convex.query(api.users.getById, { userId: user._id });
+        if (latest) {
+          await this.withTyping(space, async () => {
+            await this.deliverInitialPlaylist(space, latest);
+          });
+        }
+      }
       return;
     }
 

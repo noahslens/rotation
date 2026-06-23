@@ -54,6 +54,9 @@ const playlistGenerationSettings = (
 const selectorGenerationSettings = {
   temperature: 0.35,
 };
+const planReviewGenerationSettings = {
+  temperature: 0.2,
+};
 
 const styleGuide = [
   "you are rotation, a music concierge that texts like a sharp friend.",
@@ -102,6 +105,15 @@ const playlistNamingRules = [
   "descriptions and user-facing summaries should also be casual and specific, not overwritten.",
 ].join("\n");
 
+export const geminiInitialDiscoveryPlannerGuard = [
+  "gemini-only first rotation guard:",
+  "the first rotation / onboarding request is a broad personal discovery mix, not a mood, activity, location, setting, weather, time-of-day, or event playlist.",
+  "do not aim or name the first rotation around night drives, headlights, rain, gym, party, focus, sadness, a city, a season, or one cinematic scene unless the latest user message explicitly asked for that. the default first rotation prompt does not.",
+  "the playlist name should be neutral and lowercase, like first rotation, rotation zero, high contrast, or another simple library-wide name. avoid names that imply one narrow setting.",
+  "searchQueries must cover the user's major supported taste clusters across their savedTracks and strong user-owned playlist tracks. when the library supports it, use at least 5 distinct lanes across genres, eras, scenes, tempos, and textures.",
+  "no single mood, setting, artist, album, genre, or scene should dominate the searchQueries. if your draft can be summarized as one mood or setting, discard it and rewrite it as a broad cross-genre discovery mix.",
+].join("\n");
+
 const intentSchema = z.object({
   intent: z.enum([
     "help",
@@ -129,6 +141,16 @@ const playlistPlanSchema = z.object({
   familiarTrackIds: z.array(z.string()).max(1000),
   vibe: z.string().max(1000),
   userFacingSummary: z.string().min(1).max(2000),
+});
+
+const initialDiscoveryPlanReviewSchema = z.object({
+  passes: z.boolean(),
+  reason: z.string().max(400),
+  revisedPlaylistName: z.string().min(1).max(80).optional(),
+  revisedPlaylistDescription: z.string().min(1).max(240).optional(),
+  revisedUserFacingSummary: z.string().min(1).max(320).optional(),
+  queryAdditions: z.array(z.string().min(2).max(120)).max(40).optional(),
+  queriesToDrop: z.array(z.string().min(2).max(120)).max(40).optional(),
 });
 
 const playlistEditPlanSchema = z.object({
@@ -355,6 +377,41 @@ const uniqueStrings = (values: string[]) => {
   return result;
 };
 
+const queryKey = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+
+export const applyInitialDiscoveryPlanReview = (
+  plan: PlaylistPlanObject,
+  review: z.infer<typeof initialDiscoveryPlanReviewSchema>,
+): PlaylistPlanObject => {
+  if (review.passes) return plan;
+
+  const queriesToDrop = new Set((review.queriesToDrop ?? []).map(queryKey));
+  const searchQueries = uniqueStrings([
+    ...plan.searchQueries.filter((query) => !queriesToDrop.has(queryKey(query))),
+    ...(review.queryAdditions ?? []),
+  ]).slice(0, 40);
+
+  return {
+    ...plan,
+    playlistName: compactString(
+      review.revisedPlaylistName,
+      80,
+      plan.playlistName,
+    ),
+    playlistDescription: compactString(
+      review.revisedPlaylistDescription,
+      240,
+      plan.playlistDescription,
+    ),
+    userFacingSummary: compactString(
+      review.revisedUserFacingSummary,
+      320,
+      plan.userFacingSummary,
+    ),
+    searchQueries: searchQueries.length ? searchQueries : plan.searchQueries,
+  };
+};
+
 const normalizePlaylistPlan = (
   plan: PlaylistPlanObject,
   args: { prompt: string; defaultCount: number; fixedTargetCount?: boolean },
@@ -448,6 +505,7 @@ ${JSON.stringify(
     pollAnswer?: string;
     newOnly?: boolean;
     fixedTargetCount?: boolean;
+    initialDiscovery?: boolean;
     conversationHistory?: ConversationTurn[];
     provider?: PlaylistAiProvider;
   }) {
@@ -465,6 +523,7 @@ playlist metadata is only included for user-owned playlists with stored track co
 ${playlistJudgmentRules}
 ${conversationRules}
 ${playlistNamingRules}
+${provider === "gemini" && args.initialDiscovery ? geminiInitialDiscoveryPlannerGuard : ""}
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
 do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
@@ -506,11 +565,58 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       ),
     });
 
-    return normalizePlaylistPlan(result.object, {
+    let normalized = normalizePlaylistPlan(result.object, {
       prompt: args.prompt,
       defaultCount: args.defaultCount,
       fixedTargetCount: args.fixedTargetCount,
     });
+
+    if (provider === "gemini" && args.initialDiscovery) {
+      normalized = await this.reviewInitialDiscoveryPlan(args.prompt, normalized);
+    }
+
+    return normalized;
+  }
+
+  private async reviewInitialDiscoveryPlan(
+    prompt: string,
+    plan: PlaylistPlanObject,
+  ): Promise<PlaylistPlanObject> {
+    try {
+      const result = await generateObject({
+        model: selectorModel(),
+        schema: initialDiscoveryPlanReviewSchema,
+        ...planReviewGenerationSettings,
+        system: `review a spotify first rotation planner output.
+the first rotation must be a broad personal discovery mix across the user's supported taste clusters.
+it must not become a mood, activity, location, setting, weather, time-of-day, event, or one-scene playlist.
+passes should be true only if the playlistName, copy, and searchQueries clearly remain broad and library-wide.
+if it fails, return minimal repairs: a neutral lowercase name, neutral copy, narrow queries to drop, and broad query additions that preserve genres/scenes already implied by the plan.
+do not make a new playlist. do not select songs.`,
+        prompt: JSON.stringify(
+          {
+            userPrompt: prompt,
+            plan,
+          },
+          null,
+          2,
+        ),
+      });
+      const reviewed = applyInitialDiscoveryPlanReview(plan, result.object);
+      if (!result.object.passes) {
+        console.info("[rotation.initial_plan_review_repaired]", {
+          reason: result.object.reason,
+          beforeName: plan.playlistName,
+          afterName: reviewed.playlistName,
+        });
+      }
+      return reviewed;
+    } catch (caught) {
+      console.warn("[rotation.initial_plan_review_failed]", {
+        error: caught instanceof Error ? caught.message : String(caught),
+      });
+      return plan;
+    }
   }
 
   async chooseTracks(args: {

@@ -2738,6 +2738,7 @@ export class RotationBot {
                   pollAnswer: args.pollAnswer,
                   newOnly,
                   fixedTargetCount: args.requestKind !== "user",
+                  initialDiscovery: args.requestKind === "initial",
                   conversationHistory: args.conversationHistory,
                   provider,
                 });

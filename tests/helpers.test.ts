@@ -698,3 +698,41 @@ test("playlist diversity caps albums and artists", async () => {
     ["a1", "a2", "a4", "a5", "b1"],
   );
 });
+
+test("gemini initial discovery review repairs narrow first rotation plans", async () => {
+  const {
+    applyInitialDiscoveryPlanReview,
+    geminiInitialDiscoveryPlannerGuard,
+  } = await import("../src/ai/rotationAi");
+
+  assert.match(geminiInitialDiscoveryPlannerGuard, /broad personal discovery mix/);
+
+  const reviewed = applyInitialDiscoveryPlanReview(
+    {
+      needsPoll: false,
+      playlistName: "headlights",
+      playlistDescription: "late night drive songs",
+      targetCount: 75,
+      searchQueries: ["night drive synthwave", "tame impala deep cuts"],
+      familiarTrackIds: [],
+      vibe: "late night drive",
+      userFacingSummary: "made a late night drive playlist.",
+    },
+    {
+      passes: false,
+      reason: "too focused on one setting",
+      revisedPlaylistName: "first rotation",
+      revisedPlaylistDescription: "broad discovery from the user's taste",
+      revisedUserFacingSummary: "first rotation is ready. lmk what you think.",
+      queriesToDrop: ["night drive synthwave"],
+      queryAdditions: ["left-field r&b deep cuts", "underground rap adjacent"],
+    },
+  );
+
+  assert.equal(reviewed.playlistName, "first rotation");
+  assert.deepEqual(reviewed.searchQueries, [
+    "tame impala deep cuts",
+    "left-field r&b deep cuts",
+    "underground rap adjacent",
+  ]);
+});

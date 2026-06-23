@@ -195,6 +195,197 @@ export const restartInitialPlaylistByPlatformUser = mutation({
   },
 });
 
+export const softResetByPlatformUser = mutation({
+  args: {
+    platform: v.string(),
+    platformUserId: v.string(),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_platform_user", (q) =>
+        q.eq("platform", args.platform).eq("platformUserId", args.platformUserId),
+      )
+      .unique();
+
+    if (!user) {
+      return {
+        reset: false,
+        completed: true,
+        deleted: {},
+      };
+    }
+
+    const userId = user._id;
+    const deleted: Record<string, number> = {};
+    const batchSize = 500;
+    let deletedThisRun = 0;
+    let mayHaveMore = false;
+
+    const remaining = () => Math.max(0, batchSize - deletedThisRun);
+    const bump = (table: string) => {
+      deleted[table] = (deleted[table] ?? 0) + 1;
+      deletedThisRun += 1;
+    };
+    const deleteDocs = async (
+      table: string,
+      docs: Array<{ _id: any; storageId?: any }>,
+      beforeDelete?: (doc: { _id: any; storageId?: any }) => Promise<void>,
+    ) => {
+      if (docs.length === remaining()) mayHaveMore = true;
+      for (const doc of docs) {
+        if (beforeDelete) await beforeDelete(doc);
+        await ctx.db.delete(doc._id);
+        bump(table);
+      }
+    };
+
+    if (remaining()) {
+      await deleteDocs(
+        "spotifyAuthStates",
+        await ctx.db
+          .query("spotifyAuthStates")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "spotifyTracks:created",
+        await ctx.db
+          .query("spotifyTracks")
+          .withIndex("by_user_source", (q) =>
+            q.eq("userId", userId).eq("source", "created"),
+          )
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "userPhotos",
+        await ctx.db
+          .query("userPhotos")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .take(remaining()),
+        async (doc) => {
+          await ctx.storage.delete(doc.storageId);
+        },
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "conversationTurns",
+        await ctx.db
+          .query("conversationTurns")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .take(remaining()),
+      );
+    }
+
+    for (const status of ["open", "answered", "expired"] as const) {
+      if (!remaining()) break;
+      await deleteDocs(
+        "pendingPolls",
+        await ctx.db
+          .query("pendingPolls")
+          .withIndex("by_user_status", (q) =>
+            q.eq("userId", userId).eq("status", status),
+          )
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "recommendationRequests",
+        await ctx.db
+          .query("recommendationRequests")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "playlistExpirations",
+        await ctx.db
+          .query("playlistExpirations")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "listeningSessions",
+        await ctx.db
+          .query("listeningSessions")
+          .withIndex("by_user_context", (q) => q.eq("userId", userId))
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "billingEvents",
+        await ctx.db
+          .query("billingEvents")
+          .filter((q) => q.eq(q.field("userId"), userId))
+          .take(remaining()),
+      );
+    }
+
+    for (const kind of ["subscription_welcome"] as const) {
+      if (!remaining()) break;
+      await deleteDocs(
+        "outboundNotifications",
+        await ctx.db
+          .query("outboundNotifications")
+          .withIndex("by_user_kind", (q) => q.eq("userId", userId).eq("kind", kind))
+          .take(remaining()),
+      );
+    }
+
+    if (remaining()) {
+      await deleteDocs(
+        "jobFailures",
+        await ctx.db
+          .query("jobFailures")
+          .filter((q) => q.eq(q.field("userId"), userId))
+          .take(remaining()),
+      );
+    }
+
+    await ctx.db.patch(userId, {
+      onboardingStage: "new",
+      initialPlaylistStartedAt: undefined,
+      initialPlaylistDeliveredAt: undefined,
+      hasSeenPaywall: false,
+      completedRequestCount: 0,
+      lastInteractionAt: args.now,
+      updatedAt: args.now,
+    });
+
+    return {
+      reset: true,
+      completed: !mayHaveMore && deletedThisRun < batchSize,
+      userId,
+      spotifyLinked: user.spotifyLinked,
+      lastSpotifySyncAt: user.lastSpotifySyncAt,
+      deleted,
+      preserved: {
+        spotifyTokens: true,
+        spotifyLibraryCache: true,
+        spotifyProfile: true,
+      },
+    };
+  },
+});
+
 export const markPaywallShown = mutation({
   args: { userId: v.id("users"), now: v.number() },
   handler: async (ctx, args) => {

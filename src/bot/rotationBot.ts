@@ -3153,8 +3153,7 @@ export class RotationBot {
             source === "saved" || source === "top" || source === "playlist",
           ),
       )
-      .sort((left, right) => (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0))
-      .slice(0, 400);
+      .sort((left, right) => (right.tasteWeight ?? 0) - (left.tasteWeight ?? 0));
     return uniqueById([...preferred, ...fallback]).map((track) => ({
       spotifyTrackId: track.spotifyTrackId,
       name: track.name,

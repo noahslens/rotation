@@ -522,9 +522,6 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     familiarMixPercent?: number;
     conversationHistory?: ConversationTurn[];
   }) {
-    const familiarLimit = args.newOnly
-      ? 80
-      : Math.min(320, Math.max(80, args.plan.targetCount * 2));
     const result = await generateObject({
       model: selectorModel(),
       schema: selectedTracksSchema,
@@ -532,8 +529,9 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
-you are only selecting ids from provided spotify search candidates and a compact familiar reference set.
-do not need or expect the user's full liked-song history here. the playlist plan already contains the taste strategy.
+you are selecting ids from provided spotify search candidates and familiarTracks.
+familiarTracks includes the user's full liked-song dump plus other strong familiar tracks when available.
+use familiarTracks as taste evidence and, when novelty mode allows it, as selectable current-library music.
 ${playlistJudgmentRules}
 ${conversationRules}
 selectedTrackIds is ordered playlist sequencing. the first id becomes track 1 in spotify.
@@ -560,9 +558,7 @@ return only ids from the provided lists that are allowed by the novelty mode.`,
           targetCount: args.plan.targetCount,
           recentConversation: conversationForModel(args.conversationHistory),
           candidates: args.candidates.slice(0, 320).map(compactTrack),
-          familiarTracks: args.familiarTracks
-            .slice(0, familiarLimit)
-            .map(compactTrack),
+          familiarTracks: args.familiarTracks.map(compactTrack),
         },
       ),
     });

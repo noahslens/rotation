@@ -111,6 +111,14 @@ test("playlist vote poll options are compact and ordered", async () => {
   );
 });
 
+test("playlist ready copy is skipped when sending variants", async () => {
+  const { shouldSendPlaylistReadyReply } = await import("../src/bot/rotationBot");
+
+  assert.equal(shouldSendPlaylistReadyReply(0), true);
+  assert.equal(shouldSendPlaylistReadyReply(1), true);
+  assert.equal(shouldSendPlaylistReadyReply(2), false);
+});
+
 test("playlist edit detector handles edits without stealing more-like requests", async () => {
   const { playlistEditIntent, spotifyPlaylistIdFromText } = await import("../src/bot/rotationBot");
 

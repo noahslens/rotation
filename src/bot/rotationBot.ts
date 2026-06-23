@@ -447,6 +447,8 @@ export const playlistVoteOptions = (playlistNames: string[]) =>
     return `${label}: ${compact}`.slice(0, 40);
   });
 
+export const shouldSendPlaylistReadyReply = (variantCount: number) => variantCount <= 1;
+
 export const formatDelayedProgressMessage = (message?: string) => {
   const base = preserveUrlsLowercase(message?.trim() || fallbackDelayedProgress);
   if (/\balmost done\b/i.test(base)) return base;
@@ -2893,7 +2895,9 @@ export class RotationBot {
       if (canDeliverNow) {
         playlistLinkSent = true;
         if (readySoonProgressTimer) clearTimeout(readySoonProgressTimer);
-        await sendLogged(space, user._id, reply);
+        if (shouldSendPlaylistReadyReply(variants.length)) {
+          await sendLogged(space, user._id, reply);
+        }
         await this.sendPlaylistVariants(space, user, variants, {
           includeVotePoll: variants.length > 1,
         });
@@ -3440,7 +3444,9 @@ export class RotationBot {
 
     const variants = readyRequest ? this.requestPlaylistVariants(readyRequest) : [];
     if (readyRequest && variants.length > 0) {
-      await sendLogged(space, user._id, "your playlist is ready.");
+      if (shouldSendPlaylistReadyReply(variants.length)) {
+        await sendLogged(space, user._id, "your playlist is ready.");
+      }
       await this.sendPlaylistVariants(space, user, variants, {
         includeVotePoll: variants.length > 1,
       });

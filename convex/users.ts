@@ -126,6 +126,61 @@ export const markInitialPlaylistStarted = mutation({
   },
 });
 
+export const restartInitialPlaylistByPlatformUser = mutation({
+  args: {
+    platform: v.string(),
+    platformUserId: v.string(),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_platform_user", (q) =>
+        q.eq("platform", args.platform).eq("platformUserId", args.platformUserId),
+      )
+      .unique();
+
+    if (!user) {
+      return {
+        reset: false,
+        reason: "user not found",
+        deletedRequests: 0,
+      };
+    }
+
+    const requests = await ctx.db
+      .query("recommendationRequests")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .take(100);
+    const initialRequests = requests.filter(
+      (request) =>
+        request.intent === "initial" &&
+        (request.status === "started" ||
+          request.status === "polling" ||
+          request.status === "failed"),
+    );
+
+    for (const request of initialRequests) {
+      await ctx.db.delete(request._id);
+    }
+
+    await ctx.db.patch(user._id, {
+      onboardingStage: user.spotifyLinked ? "linked" : user.onboardingStage,
+      initialPlaylistStartedAt: undefined,
+      initialPlaylistDeliveredAt: undefined,
+      updatedAt: args.now,
+    });
+
+    return {
+      reset: true,
+      userId: user._id,
+      spotifyLinked: user.spotifyLinked,
+      lastSpotifySyncAt: user.lastSpotifySyncAt,
+      deletedRequests: initialRequests.length,
+    };
+  },
+});
+
 export const markPaywallShown = mutation({
   args: { userId: v.id("users"), now: v.number() },
   handler: async (ctx, args) => {

@@ -43,6 +43,8 @@ const recentConversationMs = 60 * 60 * 1000;
 const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
 const initialRetryCooldownMs = 60 * 60 * 1000;
+export const initialPlaylistModelCount = 90;
+export const initialPlaylistDeliveryMax = 75;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -1908,8 +1910,8 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "make my first rotation: 75 new songs that fit my spotify taste. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.",
-      defaultCount: 75,
+        `make my first rotation: generate ${initialPlaylistModelCount} intended new song picks that fit my spotify taste, then the app will cut this to the best ${initialPlaylistDeliveryMax} max. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.`,
+      defaultCount: initialPlaylistModelCount,
       requestKind: "initial",
       sendProgress,
     });
@@ -1919,7 +1921,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      "those first ones are 75 songs each. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.";
+      `those first ones are ${initialPlaylistDeliveryMax} songs each. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.`;
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,
@@ -3065,12 +3067,18 @@ export class RotationBot {
     newOnly: boolean;
     conversationHistory?: ConversationTurn[];
   }): Promise<PlaylistVariantResult> {
-    const finalTargetCount = args.plan.targetCount;
+    const finalTargetCount =
+      args.requestKind === "initial"
+        ? Math.min(args.plan.targetCount, initialPlaylistDeliveryMax)
+        : args.plan.targetCount;
     const selectionPlan =
       args.requestKind === "initial"
         ? {
             ...args.plan,
-            targetCount: Math.min(200, Math.max(args.plan.targetCount, 80)),
+            targetCount: Math.min(
+              200,
+              Math.max(args.plan.targetCount, initialPlaylistModelCount),
+            ),
           }
         : args.plan;
     const knownTrackIds = new Set(

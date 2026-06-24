@@ -119,6 +119,16 @@ test("playlist ready copy is skipped when sending variants", async () => {
   assert.equal(shouldSendPlaylistReadyReply(2), false);
 });
 
+test("initial playlist plans use a larger buffer than delivered playlists", async () => {
+  const { initialPlaylistDeliveryMax, initialPlaylistModelCount } = await import(
+    "../src/bot/rotationBot"
+  );
+
+  assert.equal(initialPlaylistModelCount, 90);
+  assert.equal(initialPlaylistDeliveryMax, 75);
+  assert.ok(initialPlaylistModelCount > initialPlaylistDeliveryMax);
+});
+
 test("playlist edit detector handles edits without stealing more-like requests", async () => {
   const { playlistEditIntent, spotifyPlaylistIdFromText } = await import("../src/bot/rotationBot");
 

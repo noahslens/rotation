@@ -111,6 +111,12 @@ test("playlist vote poll options are compact and ordered", async () => {
   );
 });
 
+test("playlist generation is gemini only", async () => {
+  const { playlistProviders } = await import("../src/bot/rotationBot");
+
+  assert.deepEqual(playlistProviders(), ["gemini"]);
+});
+
 test("native poll option messages are treated as text answers", async () => {
   const { textFromMessage } = await import("../src/bot/rotationBot");
 
@@ -137,13 +143,17 @@ test("playlist ready copy is skipped when sending variants", async () => {
 test("initial playlists use a planner target and fallback backfill", async () => {
   const {
     initialPlaylistBackfillPickCount,
+    initialPlaylistDescription,
     initialPlaylistDeliveryMax,
     initialPlaylistModelCount,
+    initialPlaylistName,
   } = await import("../src/bot/rotationBot");
 
   assert.equal(initialPlaylistModelCount, 90);
   assert.equal(initialPlaylistBackfillPickCount, 90);
   assert.equal(initialPlaylistDeliveryMax, 75);
+  assert.equal(initialPlaylistName, "first rotation");
+  assert.match(initialPlaylistDescription, /broad mix/);
   assert.ok(initialPlaylistModelCount > initialPlaylistDeliveryMax);
   assert.ok(initialPlaylistBackfillPickCount >= initialPlaylistModelCount);
 });

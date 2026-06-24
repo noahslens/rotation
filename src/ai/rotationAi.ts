@@ -1,6 +1,4 @@
 import { google } from "@ai-sdk/google";
-import { anthropic } from "@ai-sdk/anthropic";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -23,14 +21,8 @@ export type ConversationTurn = {
 const model = () => google(env.geminiModel);
 const coverModel = () => google(env.geminiCoverModel);
 const selectorModel = () => google(env.geminiSelectorModel);
-export type PlaylistAiProvider = "gemini" | "sonnet";
-const openRouter = () => createOpenRouter({ apiKey: env.openRouterApiKey });
-const playlistModel = (provider: PlaylistAiProvider = "gemini") =>
-  provider === "sonnet"
-    ? env.openRouterApiKey
-      ? openRouter()(env.openRouterPlaylistModel)
-      : anthropic(env.anthropicPlaylistModel)
-    : model();
+export type PlaylistAiProvider = "gemini";
+const playlistModel = () => model();
 const providerOptions = {
   google: {
     thinkingConfig: {
@@ -43,14 +35,7 @@ const generationSettings = {
   temperature: 1,
   providerOptions,
 };
-const playlistGenerationSettings = (
-  provider: PlaylistAiProvider = "gemini",
-) =>
-  provider === "gemini"
-    ? generationSettings
-    : {
-        temperature: 1,
-      };
+const playlistGenerationSettings = () => generationSettings;
 const selectorGenerationSettings = {
   temperature: 0.35,
 };
@@ -530,9 +515,9 @@ ${JSON.stringify(
   }) {
     const provider = args.provider ?? "gemini";
     const result = await generateObject({
-      model: playlistModel(provider),
+      model: playlistModel(),
       schema: playlistPlanSchema,
-      ...playlistGenerationSettings(provider),
+      ...playlistGenerationSettings(),
       system: `${styleGuide}
 
 you choose music by using the user's full stored spotify song history plus spotify catalog search.
@@ -542,7 +527,7 @@ playlist metadata is only included for user-owned playlists with stored track co
 ${playlistJudgmentRules}
 ${conversationRules}
 ${playlistNamingRules}
-${provider === "gemini" && args.initialDiscovery ? geminiInitialDiscoveryPlannerGuard : ""}
+${args.initialDiscovery ? geminiInitialDiscoveryPlannerGuard : ""}
 the savedTracks array is the user's liked songs. for new music, treat every saved track as important taste evidence and as a strict exclusion list.
 do not average all history into one generic taste. filter the full history against the current request first, then use only the songs, artists, moods, scenes, tempos, and textures that fit.
 ignore songs from the user's history that do not fit the requested mood/activity/context, even if they are strong taste signals generally.
@@ -597,7 +582,7 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
       fixedTargetCount: args.fixedTargetCount,
     });
 
-    if (provider === "gemini" && args.initialDiscovery) {
+    if (args.initialDiscovery) {
       normalized = await this.reviewInitialDiscoveryPlan(args.prompt, normalized);
     }
 
@@ -614,9 +599,9 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
   }) {
     const provider = args.provider ?? "gemini";
     const result = await generateObject({
-      model: playlistModel(provider),
+      model: playlistModel(),
       schema: songPickBackfillSchema,
-      ...playlistGenerationSettings(provider),
+      ...playlistGenerationSettings(),
       system: `${styleGuide}
 
 you are filling missing spotify playlist candidates.

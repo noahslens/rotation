@@ -46,6 +46,11 @@ const initialRetryCooldownMs = 60 * 60 * 1000;
 export const initialPlaylistModelCount = 90;
 export const initialPlaylistBackfillPickCount = 90;
 export const initialPlaylistDeliveryMax = 75;
+export const initialPlaylistName = "first rotation";
+export const initialPlaylistDescription =
+  "a broad mix built from your actual taste across the strongest lanes in your library. new music only.";
+const initialPlaylistVibe =
+  "fixed onboarding mix: broad, library-wide discovery across the user's strongest supported taste lanes. not a mood playlist, not a scene, not a single-genre theme.";
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
 type TextingAction = {
@@ -65,6 +70,21 @@ type PlaylistVariantResult = {
     url: string;
   };
 };
+
+const fixedInitialPlaylistPlan = (
+  plan: PlaylistPlan,
+  targetCount: number,
+): PlaylistPlan => ({
+  ...plan,
+  needsPoll: false,
+  pollQuestion: undefined,
+  pollOptions: undefined,
+  playlistName: initialPlaylistName,
+  playlistDescription: initialPlaylistDescription,
+  targetCount,
+  vibe: initialPlaylistVibe,
+  userFacingSummary: "first rotation is ready. lmk what you think.",
+});
 
 const fallbackCopy = {
   greeting:
@@ -449,10 +469,8 @@ export const formatPlaylistReadyReply = (
 const fallbackDelayedProgress =
   "there's a specific lane here. digging for songs that feel like they should already be in your likes.";
 const readySoonProgressMessage = "still working. it'll be ready soon.";
-const playlistProviders = (): PlaylistAiProvider[] =>
-  env.openRouterApiKey || env.anthropicApiKey ? ["gemini", "sonnet"] : ["gemini"];
-const playlistProviderLabel = (provider: PlaylistAiProvider) =>
-  provider === "sonnet" ? "sonnet" : "gemini";
+export const playlistProviders = (): PlaylistAiProvider[] => ["gemini"];
+const playlistProviderLabel = (_provider: PlaylistAiProvider) => "gemini";
 const ordinalLabel = (index: number) =>
   index === 0 ? "first" : index === 1 ? "second" : `option ${index + 1}`;
 const compactPollName = (name: string) => {
@@ -570,6 +588,14 @@ export const stripePaymentLinkContent = (userId: string) => {
 
 const compactError = (caught: unknown) =>
   caught instanceof Error ? caught.message : String(caught);
+
+const fallbackErrorMessage = (caught: unknown) => {
+  const error = compactError(caught);
+  if (/spotify rate limited|spotify api 429/i.test(error)) {
+    return "spotify is rate-limiting us rn. i paused this instead of letting it spin. try again later.";
+  }
+  return fallbackCopy.error;
+};
 
 const normalize = (value: string) =>
   value
@@ -1406,7 +1432,7 @@ export class RotationBot {
     } catch (caught) {
       await this.recordFailure("message_handler", user._id, { text: inboundText }, caught);
       console.error("[rotation.error]", caught);
-      await sendLogged(space, user._id, fallbackCopy.error).catch((sendError) => {
+      await sendLogged(space, user._id, fallbackErrorMessage(caught)).catch((sendError) => {
         console.error("[rotation.fallback_send_failed]", sendError);
       });
     }
@@ -1928,7 +1954,7 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        "make my first rotation: new songs that fit my spotify taste. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.",
+        "make my first rotation: build the fixed onboarding playlist concept called first rotation. this is a broad cross-genre mix, not a themed playlist. do not invent a mood, setting, scene, title, or narrative concept. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. represent every major genre or sound lane that clearly shows up in my library, especially lanes around 10 percent or more of the evidence. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.",
       defaultCount: initialPlaylistModelCount,
       requestKind: "initial",
       sendProgress,
@@ -1939,7 +1965,7 @@ export class RotationBot {
     });
     console.info("[rotation.initial] delivered", { userId: user._id });
     const explainer =
-      `those first ones are ${initialPlaylistDeliveryMax} songs each. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.`;
+      `that first one is ${initialPlaylistDeliveryMax} songs. you can always ask for more. now let's build a custom playlist: text me a mood, activity, artist, playlist, or just ask for more stuff you'd fw and i'll make it.`;
     await sendLogged(space, user._id, explainer);
     await sendLogged(
       space,
@@ -2764,7 +2790,9 @@ export class RotationBot {
             provider,
             label: playlistProviderLabel(provider),
             plan:
-              args.requestKind === "user"
+              args.requestKind === "initial"
+                ? fixedInitialPlaylistPlan(rawPlan, args.defaultCount)
+                : args.requestKind === "user"
                 ? rawPlan
                 : { ...rawPlan, targetCount: args.defaultCount },
           };
@@ -3503,10 +3531,10 @@ export class RotationBot {
       label: string;
       playlist: { name: string; url: string };
     }>,
-    options: { includeVotePoll?: boolean } = {},
+    _options: { includeVotePoll?: boolean } = {},
   ) {
     if (variants.length > 1) {
-      await sendLogged(space, user._id, "made two versions. vote after you listen.");
+      await sendLogged(space, user._id, "made two versions.");
     }
     for (const [index, variant] of variants.entries()) {
       if (variants.length > 1) {
@@ -3517,16 +3545,6 @@ export class RotationBot {
         );
       }
       await this.sendPlaylistLink(space, user, variant.playlist.url);
-    }
-    if (options.includeVotePoll && variants.length > 1) {
-      const voteOptions = playlistVoteOptions(
-        variants.map((variant) => variant.playlist.name),
-      );
-      await space.send(poll("which one did you like more?", voteOptions));
-      await outbound(
-        user._id,
-        `which one did you like more? ${voteOptions.join(" / ")}`,
-      );
     }
   }
 

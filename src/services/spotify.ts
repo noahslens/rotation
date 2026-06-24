@@ -10,6 +10,7 @@ const snapshotTrackBatchSize = 400;
 const spotifyPageConcurrency = 3;
 const spotifyPlaylistTrackConcurrency = 2;
 const spotifyRequestTimeoutMs = 20_000;
+const spotifyMaxRetryDelayMs = 15_000;
 
 export const spotifyScopes = [
   "user-read-email",
@@ -932,9 +933,22 @@ export class SpotifyService {
       const retryable = [429, 500, 502, 503, 504].includes(response.status);
       if (attempt < maxAttempts && retryable) {
         const retryAfter = Number(response.headers.get("retry-after"));
-        const delayMs = Number.isFinite(retryAfter)
+        const retryAfterMs = Number.isFinite(retryAfter)
           ? retryAfter * 1000
-          : 800 * attempt;
+          : undefined;
+        if (
+          response.status === 429 &&
+          retryAfterMs !== undefined &&
+          retryAfterMs > spotifyMaxRetryDelayMs
+        ) {
+          throw new Error(
+            `spotify rate limited: retry after ${Math.ceil(retryAfterMs / 1000)}s`,
+          );
+        }
+        const delayMs = Math.min(
+          retryAfterMs ?? 800 * attempt,
+          spotifyMaxRetryDelayMs,
+        );
         console.warn("[spotify.request_retry]", {
           userId,
           method,

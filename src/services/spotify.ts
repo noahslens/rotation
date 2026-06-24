@@ -125,6 +125,23 @@ const spotifyPlainText = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+export const spotifyDescriptionText = (value: string) =>
+  spotifyPlainText(value)
+    .replace(
+      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen))?(?:\s+[a-z]+){0,2}\s*(?:songs?|tracks?|picks?|cuts?)\b[,.:\s-]*/gi,
+      "",
+    )
+    .replace(/\b\d{1,3}(?:\s+[a-z]+){0,2}\s*(?:songs?|tracks?|picks?|cuts?)\b[,.:\s-]*/g, "")
+    .replace(
+      /\b(?:song|track|pick|cut)\s*(?:count|total|amount)\b[,.:\s-]*/g,
+      "",
+    )
+    .replace(/\b(?:targetcount|defaulttargetcount)\b[,.:\s-]*/g, "")
+    .replace(/\s+([,.])/g, "$1")
+    .replace(/^[,.\s-]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const searchableText = (value: string) =>
   value
     .toLowerCase()
@@ -507,6 +524,7 @@ export class SpotifyService {
       isPublic?: boolean;
     },
   ): Promise<CreatedPlaylist> {
+    const playlistDescription = spotifyDescriptionText(input.description).slice(0, 300);
     const playlist = await this.request<{
       id: string;
       name: string;
@@ -516,7 +534,7 @@ export class SpotifyService {
       method: "POST",
       body: JSON.stringify({
         name: (spotifyPlainText(input.name) || "rotation").slice(0, 100),
-        description: spotifyPlainText(input.description).slice(0, 300),
+        description: playlistDescription,
         public: input.isPublic ?? false,
       }),
     });
@@ -554,7 +572,7 @@ export class SpotifyService {
     await this.cachePlaylist(user, {
       id: playlist.id,
       name: playlist.name,
-      description: input.description,
+      description: playlistDescription,
       trackCount: input.tracks.length,
       url: playlist.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlist.id}`,
     });
@@ -635,7 +653,7 @@ export class SpotifyService {
     const nextDescription =
       input.description === undefined || input.description === null
         ? undefined
-        : spotifyPlainText(input.description);
+        : spotifyDescriptionText(input.description);
     if (!nextName && nextDescription === undefined) return playlist;
 
     await this.request(user._id, `/playlists/${playlist.id}`, {

@@ -44,6 +44,7 @@ const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
 const initialRetryCooldownMs = 60 * 60 * 1000;
 export const initialPlaylistModelCount = 90;
+export const initialPlaylistSongPickBufferMin = 180;
 export const initialPlaylistDeliveryMax = 75;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
@@ -1927,7 +1928,7 @@ export class RotationBot {
     }
     await this.createPlaylistFromPrompt(space, user, {
       prompt:
-        `make my first rotation: generate ${initialPlaylistModelCount} intended new song picks that fit my spotify taste, then the app will cut this to the best ${initialPlaylistDeliveryMax} max. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.`,
+        "make my first rotation: new songs that fit my spotify taste. use my liked songs as the primary taste evidence, but do not include songs i already have liked or saved. these should not be songs i might like; they should be songs i am almost certain to like based on repeated patterns across my liked songs and strongest playlists. make it a wide cross-genre discovery mix, not one tight theme, but only use genre lanes that are clearly supported by my history. go more niche and deeper-cut than obvious mainstream hits while still choosing near-certain layups.",
       defaultCount: initialPlaylistModelCount,
       requestKind: "initial",
       sendProgress,
@@ -2756,6 +2757,10 @@ export class RotationBot {
                   newOnly,
                   fixedTargetCount: args.requestKind !== "user",
                   initialDiscovery: args.requestKind === "initial",
+                  initialSongPickBufferMin:
+                    args.requestKind === "initial"
+                      ? initialPlaylistSongPickBufferMin
+                      : undefined,
                   conversationHistory: args.conversationHistory,
                   provider,
                 });
@@ -3129,6 +3134,15 @@ export class RotationBot {
       : args.newOnly
         ? rankDiscoveryCandidates(rawCandidates)
         : rawCandidates;
+    console.info("[rotation.playlist_candidates]", {
+      userId: args.user._id,
+      provider: args.provider,
+      requestKind: args.requestKind,
+      planSongPicks: planSongPicks.length,
+      resolvedCandidates: rawCandidates.length,
+      targetCount: finalTargetCount,
+      selectionTargetCount: selectionPlan.targetCount,
+    });
     const familiarTracks = this.familiarTracks(
       args.context.tracks,
       args.plan.familiarTrackIds,
@@ -3171,6 +3185,14 @@ export class RotationBot {
             maxPerArtist: 4,
           }).slice(0, finalTargetCount)
         : selectedPool.slice(0, finalTargetCount);
+    console.info("[rotation.playlist_selected]", {
+      userId: args.user._id,
+      provider: args.provider,
+      requestKind: args.requestKind,
+      selectedPool: selectedPool.length,
+      selected: selected.length,
+      targetCount: finalTargetCount,
+    });
 
     if (selected.length === 0) {
       throw new Error(`no tracks selected for ${args.label}`);

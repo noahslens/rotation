@@ -521,6 +521,7 @@ ${JSON.stringify(
     newOnly?: boolean;
     fixedTargetCount?: boolean;
     initialDiscovery?: boolean;
+    initialSongPickBufferMin?: number;
     conversationHistory?: ConversationTurn[];
     provider?: PlaylistAiProvider;
   }) {
@@ -566,6 +567,8 @@ for new music/discovery, avoid super mainstream picks unless the user explicitly
 for songPicks, output the actual songs you want in the playlist as plain text strings in exactly this format: artist - song title.
 songPicks are not search queries, genres, moods, scenes, or artist-only hints. each item must name one real song by one real artist.
 for any new-song share, songPicks is the primary output. include about 35 percent more songPicks than targetCount for that new-song share because unmatched spotify results and known-library duplicates will be skipped.
+${args.initialDiscovery ? `for the first rotation / onboarding discovery playlist, include at least ${args.initialSongPickBufferMin ?? 180} songPicks. this is a hidden resolver buffer, not something to mention in playlistName, playlistDescription, userFacingSummary, or any user-facing copy.` : ""}
+never mention song counts, pick counts, targetCount, defaultTargetCount, resolver buffers, or internal generation numbers in playlistName, playlistDescription, userFacingSummary, or any user-facing copy.
 for balanced playlists, use familiarTrackIds for current-library songs and songPicks for the new-song portion.
 if pollAnswer says 100% current, songPicks can be empty and familiarTrackIds should carry the playlist.
 searchQueries is legacy fallback only. do not use it for broad discovery strategy unless you genuinely cannot name specific songs.

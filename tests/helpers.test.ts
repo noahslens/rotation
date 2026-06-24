@@ -135,13 +135,17 @@ test("playlist ready copy is skipped when sending variants", async () => {
 });
 
 test("initial playlist plans use a larger buffer than delivered playlists", async () => {
-  const { initialPlaylistDeliveryMax, initialPlaylistModelCount } = await import(
-    "../src/bot/rotationBot"
-  );
+  const {
+    initialPlaylistDeliveryMax,
+    initialPlaylistModelCount,
+    initialPlaylistSongPickBufferMin,
+  } = await import("../src/bot/rotationBot");
 
   assert.equal(initialPlaylistModelCount, 90);
+  assert.equal(initialPlaylistSongPickBufferMin, 180);
   assert.equal(initialPlaylistDeliveryMax, 75);
   assert.ok(initialPlaylistModelCount > initialPlaylistDeliveryMax);
+  assert.ok(initialPlaylistSongPickBufferMin > initialPlaylistModelCount);
 });
 
 test("playlist edit detector handles edits without stealing more-like requests", async () => {
@@ -792,4 +796,23 @@ test("song pick spotify helpers parse and score intended tracks", async () => {
 
   assert.ok(exactScore > 0.85);
   assert.ok(badScore < 0.45);
+});
+
+test("spotify playlist descriptions strip song counts", async () => {
+  const { spotifyDescriptionText } = await import("../src/services/spotify");
+
+  assert.equal(
+    spotifyDescriptionText(
+      "90 picks built off your actual taste. moody bedroom pop and nocturnal trap.",
+    ),
+    "built off your actual taste. moody bedroom pop and nocturnal trap.",
+  );
+  assert.equal(
+    spotifyDescriptionText("75 songs, no obvious hits, just adjacent gold."),
+    "no obvious hits, just adjacent gold.",
+  );
+  assert.equal(
+    spotifyDescriptionText("seventy-five deep cuts built off your actual taste."),
+    "built off your actual taste.",
+  );
 });

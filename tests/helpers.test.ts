@@ -117,6 +117,19 @@ test("playlist generation is gemini only", async () => {
   assert.deepEqual(playlistProviders(), ["gemini"]);
 });
 
+test("spotify rate limits use a specific fallback message", async () => {
+  const { fallbackErrorMessage } = await import("../src/bot/rotationBot");
+
+  assert.match(
+    fallbackErrorMessage(new Error("spotify rate limited: retry after 47560s")),
+    /spotify is rate-limiting/i,
+  );
+  assert.notEqual(
+    fallbackErrorMessage(new Error("spotify rate limited: retry after 47560s")),
+    "my bad, something broke on my side. try that again in a sec.",
+  );
+});
+
 test("native poll option messages are treated as text answers", async () => {
   const { textFromMessage } = await import("../src/bot/rotationBot");
 

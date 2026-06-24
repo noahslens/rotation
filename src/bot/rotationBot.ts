@@ -589,7 +589,7 @@ export const stripePaymentLinkContent = (userId: string) => {
 const compactError = (caught: unknown) =>
   caught instanceof Error ? caught.message : String(caught);
 
-const fallbackErrorMessage = (caught: unknown) => {
+export const fallbackErrorMessage = (caught: unknown) => {
   const error = compactError(caught);
   if (/spotify rate limited|spotify api 429/i.test(error)) {
     return "spotify is rate-limiting us rn. i paused this instead of letting it spin. try again later.";
@@ -2859,16 +2859,20 @@ export class RotationBot {
           }),
         ),
       );
+      let firstVariantError: unknown;
       const variants = variantResults.flatMap((result, index) => {
         const provider = providerPlans[index]?.provider ?? "gemini";
         if (result.status === "fulfilled") return [result.value];
+        firstVariantError ??= result.reason;
         console.warn("[rotation.playlist_variant_failed]", {
           provider,
           error: compactError(result.reason),
         });
         return [];
       });
-      if (variants.length === 0) throw new Error("no playlist variants created");
+      if (variants.length === 0) {
+        throw firstVariantError ?? new Error("no playlist variants created");
+      }
       const cover = await coverPromise;
       if (cover) {
         let markedPhotoUsed = false;

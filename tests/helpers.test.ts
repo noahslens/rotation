@@ -134,18 +134,18 @@ test("playlist ready copy is skipped when sending variants", async () => {
   assert.equal(shouldSendPlaylistReadyReply(2), false);
 });
 
-test("initial playlist plans use a larger buffer than delivered playlists", async () => {
+test("initial playlists use a planner target and fallback backfill", async () => {
   const {
+    initialPlaylistBackfillPickCount,
     initialPlaylistDeliveryMax,
     initialPlaylistModelCount,
-    initialPlaylistSongPickBufferMin,
   } = await import("../src/bot/rotationBot");
 
   assert.equal(initialPlaylistModelCount, 90);
-  assert.equal(initialPlaylistSongPickBufferMin, 180);
+  assert.equal(initialPlaylistBackfillPickCount, 90);
   assert.equal(initialPlaylistDeliveryMax, 75);
   assert.ok(initialPlaylistModelCount > initialPlaylistDeliveryMax);
-  assert.ok(initialPlaylistSongPickBufferMin > initialPlaylistModelCount);
+  assert.ok(initialPlaylistBackfillPickCount >= initialPlaylistModelCount);
 });
 
 test("playlist edit detector handles edits without stealing more-like requests", async () => {

@@ -156,6 +156,10 @@ const initialDiscoveryPlanReviewSchema = z.object({
   queriesToDrop: z.array(z.string().min(2).max(120)).max(40).optional(),
 });
 
+const songPickBackfillSchema = z.object({
+  songPicks: z.array(z.string().min(2).max(200)).min(1).max(120),
+});
+
 const playlistEditPlanSchema = z.object({
   action: z.enum(["add_tracks", "remove_tracks", "replace_tracks", "mixed_update", "rename"]),
   needsPoll: z.boolean(),
@@ -521,7 +525,6 @@ ${JSON.stringify(
     newOnly?: boolean;
     fixedTargetCount?: boolean;
     initialDiscovery?: boolean;
-    initialSongPickBufferMin?: number;
     conversationHistory?: ConversationTurn[];
     provider?: PlaylistAiProvider;
   }) {
@@ -567,7 +570,6 @@ for new music/discovery, avoid super mainstream picks unless the user explicitly
 for songPicks, output the actual songs you want in the playlist as plain text strings in exactly this format: artist - song title.
 songPicks are not search queries, genres, moods, scenes, or artist-only hints. each item must name one real song by one real artist.
 for any new-song share, songPicks is the primary output. include about 35 percent more songPicks than targetCount for that new-song share because unmatched spotify results and known-library duplicates will be skipped.
-${args.initialDiscovery ? `for the first rotation / onboarding discovery playlist, include at least ${args.initialSongPickBufferMin ?? 180} songPicks. this is a hidden resolver buffer, not something to mention in playlistName, playlistDescription, userFacingSummary, or any user-facing copy.` : ""}
 never mention song counts, pick counts, targetCount, defaultTargetCount, resolver buffers, or internal generation numbers in playlistName, playlistDescription, userFacingSummary, or any user-facing copy.
 for balanced playlists, use familiarTrackIds for current-library songs and songPicks for the new-song portion.
 if pollAnswer says 100% current, songPicks can be empty and familiarTrackIds should carry the playlist.
@@ -600,6 +602,53 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
     }
 
     return normalized;
+  }
+
+  async backfillSongPicks(args: {
+    prompt: string;
+    context: MusicContext;
+    plan: PlaylistPlanObject;
+    existingPicks: string[];
+    count: number;
+    provider?: PlaylistAiProvider;
+  }) {
+    const provider = args.provider ?? "gemini";
+    const result = await generateObject({
+      model: playlistModel(provider),
+      schema: songPickBackfillSchema,
+      ...playlistGenerationSettings(provider),
+      system: `${styleGuide}
+
+you are filling missing spotify playlist candidates.
+return only additional real songs as songPicks in exactly this format: artist - song title.
+do not return genres, moods, artist-only hints, explanations, or user-facing copy.
+do not repeat anything in existingPicks.
+the playlist is new music only, so do not choose songs already in the user's savedTracks, playlistTracks, topTracks, or createdTracks.
+use the user's full stored spotify song history as taste evidence.
+for the first rotation / onboarding discovery playlist, keep the playlist broad across the user's major supported taste clusters. do not narrow into one mood, setting, artist, album, genre, or scene.
+each pick should be a near-certain taste match, not a speculative maybe.
+avoid obvious mainstream hits unless they are unusually strong fits.
+avoid lazy clustering from one artist or album.`,
+      prompt: JSON.stringify(
+        {
+          userPrompt: args.prompt,
+          playlistName: args.plan.playlistName,
+          playlistDescription: args.plan.playlistDescription,
+          vibe: args.plan.vibe,
+          requestedAdditionalPicks: Math.max(1, Math.min(120, args.count)),
+          existingPicks: args.existingPicks,
+          musicContext: contextForModel(args.context),
+        },
+        null,
+        2,
+      ),
+    });
+
+    return uniqueStrings(
+      result.object.songPicks
+        .map((pick) => compactString(pick, 120))
+        .filter(Boolean),
+    ).slice(0, Math.max(1, Math.min(120, args.count)));
   }
 
   private async reviewInitialDiscoveryPlan(

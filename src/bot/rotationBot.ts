@@ -44,7 +44,7 @@ const recentConversationLimit = 80;
 const readySoonProgressMs = 200 * 1000;
 const initialRetryCooldownMs = 60 * 60 * 1000;
 export const initialPlaylistModelCount = 90;
-export const initialPlaylistSongPickBufferMin = 180;
+export const initialPlaylistBackfillPickCount = 90;
 export const initialPlaylistDeliveryMax = 75;
 
 type MusicContext = Awaited<ReturnType<typeof convex.query<typeof api.spotify.getMusicContext>>>;
@@ -2757,10 +2757,6 @@ export class RotationBot {
                   newOnly,
                   fixedTargetCount: args.requestKind !== "user",
                   initialDiscovery: args.requestKind === "initial",
-                  initialSongPickBufferMin:
-                    args.requestKind === "initial"
-                      ? initialPlaylistSongPickBufferMin
-                      : undefined,
                   conversationHistory: args.conversationHistory,
                   provider,
                 });
@@ -3115,7 +3111,7 @@ export class RotationBot {
         ]
       : planSongPicks;
     const maxCandidates = Math.min(600, Math.max(240, selectionPlan.targetCount * 3));
-    const rawCandidates =
+    let rawCandidates =
       songPicks.length > 0
         ? await this.spotify.resolveSongPicks(
             args.user._id,
@@ -3129,7 +3125,7 @@ export class RotationBot {
             knownTrackIds,
             maxCandidates,
           );
-    const candidates = songPicks.length > 0
+    let candidates = songPicks.length > 0
       ? rawCandidates
       : args.newOnly
         ? rankDiscoveryCandidates(rawCandidates)
@@ -3149,42 +3145,94 @@ export class RotationBot {
     );
     const familiarPercent = familiarMixPercent(args.pollAnswer);
     const allowSameArtistTitleRepeats = allowsRepeatedSongVersions(args.prompt);
-    const selectedWithBuffer = finalizeSelectedTracks(
-      await this.selectTracks(
-        args.prompt,
-        selectionPlan,
-        candidates,
-        familiarTracks,
-        args.newOnly,
-        familiarPercent,
-        args.conversationHistory,
-      ),
-      [...args.context.tracks, ...candidates, ...familiarTracks],
-      openerQuery,
-    );
-    const selectedPool = args.newOnly
-      ? uniquePlaylistTracks(
-          [
-            ...filterKnownLibraryTracks(selectedWithBuffer, args.context.tracks),
-            ...filterKnownLibraryTracks(candidates, args.context.tracks),
-          ],
-          { allowSameArtistTitleRepeats },
-        )
-      : applyFamiliarMix({
-          selected: selectedWithBuffer,
-          candidates,
+    const selectFromCandidates = async (candidateTracks: CandidateTrack[]) => {
+      const selectedWithBuffer = finalizeSelectedTracks(
+        await this.selectTracks(
+          args.prompt,
+          selectionPlan,
+          candidateTracks,
           familiarTracks,
-          targetCount: finalTargetCount,
+          args.newOnly,
           familiarPercent,
-          allowSameArtistTitleRepeats,
+          args.conversationHistory,
+        ),
+        [...args.context.tracks, ...candidateTracks, ...familiarTracks],
+        openerQuery,
+      );
+      const selectedPool = args.newOnly
+        ? uniquePlaylistTracks(
+            [
+              ...filterKnownLibraryTracks(selectedWithBuffer, args.context.tracks),
+              ...filterKnownLibraryTracks(candidateTracks, args.context.tracks),
+            ],
+            { allowSameArtistTitleRepeats },
+          )
+        : applyFamiliarMix({
+            selected: selectedWithBuffer,
+            candidates: candidateTracks,
+            familiarTracks,
+            targetCount: finalTargetCount,
+            familiarPercent,
+            allowSameArtistTitleRepeats,
+          });
+      const selected =
+        args.requestKind === "initial"
+          ? enforcePlaylistDiversity(selectedPool, {
+              maxPerAlbum: 2,
+              maxPerArtist: 4,
+            }).slice(0, finalTargetCount)
+          : selectedPool.slice(0, finalTargetCount);
+      return { selectedPool, selected };
+    };
+    let { selectedPool, selected } = await selectFromCandidates(candidates);
+
+    if (
+      args.requestKind === "initial" &&
+      selected.length < finalTargetCount &&
+      songPicks.length > 0
+    ) {
+      try {
+        const backfillPicks = await this.ai.backfillSongPicks({
+          prompt: args.prompt,
+          context: args.context,
+          plan: args.plan,
+          existingPicks: songPicks,
+          count: initialPlaylistBackfillPickCount,
+          provider: args.provider,
         });
-    const selected =
-      args.requestKind === "initial"
-        ? enforcePlaylistDiversity(selectedPool, {
-            maxPerAlbum: 2,
-            maxPerArtist: 4,
-          }).slice(0, finalTargetCount)
-        : selectedPool.slice(0, finalTargetCount);
+        const backfillKnownTrackIds = new Set([
+          ...knownTrackIds,
+          ...candidates.map((track) => track.spotifyTrackId),
+        ]);
+        const backfillCandidates = await this.spotify.resolveSongPicks(
+          args.user._id,
+          backfillPicks,
+          backfillKnownTrackIds,
+          maxCandidates,
+        );
+        rawCandidates = uniqueById([...rawCandidates, ...backfillCandidates]);
+        candidates = uniqueById([...candidates, ...backfillCandidates]);
+        console.info("[rotation.playlist_backfill]", {
+          userId: args.user._id,
+          provider: args.provider,
+          requestKind: args.requestKind,
+          selectedBefore: selected.length,
+          backfillPicks: backfillPicks.length,
+          backfillCandidates: backfillCandidates.length,
+          resolvedCandidates: rawCandidates.length,
+          targetCount: finalTargetCount,
+        });
+        ({ selectedPool, selected } = await selectFromCandidates(candidates));
+      } catch (caught) {
+        console.warn("[rotation.playlist_backfill_failed]", {
+          userId: args.user._id,
+          provider: args.provider,
+          error: compactError(caught),
+          selectedBefore: selected.length,
+          targetCount: finalTargetCount,
+        });
+      }
+    }
     console.info("[rotation.playlist_selected]", {
       userId: args.user._id,
       provider: args.provider,

@@ -111,6 +111,21 @@ test("playlist vote poll options are compact and ordered", async () => {
   );
 });
 
+test("native poll option messages are treated as text answers", async () => {
+  const { textFromMessage } = await import("../src/bot/rotationBot");
+
+  const message = {
+    content: {
+      type: "poll_option",
+      title: "50% current",
+      option: { title: "50% current" },
+      selected: true,
+    },
+  };
+
+  assert.equal(textFromMessage(message as any), "50% current");
+});
+
 test("playlist ready copy is skipped when sending variants", async () => {
   const { shouldSendPlaylistReadyReply } = await import("../src/bot/rotationBot");
 

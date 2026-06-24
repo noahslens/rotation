@@ -83,19 +83,32 @@ const isTextMessage = (
 ): message is Message & { content: { type: "text"; text: string } } =>
   message.content.type === "text";
 
-const textFromMessage = (message: Message) => {
+export const textFromMessage = (message: Message) => {
   if (isTextMessage(message)) return message.content.text;
   const content = message.content as {
     type: string;
     markdown?: unknown;
     text?: unknown;
     url?: unknown;
+    title?: unknown;
+    selected?: unknown;
+    option?: {
+      title?: unknown;
+    };
   };
   if (content.type === "markdown" && typeof content.markdown === "string") {
     return content.markdown;
   }
   if (content.type === "richlink" && typeof content.url === "string") {
     return content.url;
+  }
+  if (content.type === "poll_option" && content.selected !== false) {
+    if (typeof content.title === "string" && content.title.trim()) {
+      return content.title;
+    }
+    if (typeof content.option?.title === "string" && content.option.title.trim()) {
+      return content.option.title;
+    }
   }
   if (typeof content.text === "string" && content.text.trim()) return content.text;
   return undefined;
@@ -109,6 +122,8 @@ const messageContentSummary = (message: Message) => {
     name?: unknown;
     size?: unknown;
     url?: unknown;
+    title?: unknown;
+    selected?: unknown;
   };
   return {
     type: content.type,
@@ -117,6 +132,8 @@ const messageContentSummary = (message: Message) => {
     name: typeof content.name === "string" ? content.name : undefined,
     size: typeof content.size === "number" ? content.size : undefined,
     hasUrl: typeof content.url === "string",
+    title: typeof content.title === "string" ? content.title : undefined,
+    selected: typeof content.selected === "boolean" ? content.selected : undefined,
   };
 };
 
@@ -2268,15 +2285,20 @@ export class RotationBot {
       return true;
     }
 
-    await convex.mutation(api.conversation.resolvePendingPoll, {
-      pollId: openPoll._id,
-      selectedOption,
-      now: Date.now(),
-    });
-
     const resolvedPrompt = `${openPoll.originalPrompt} ${selectedOption}`;
-    if (playlistEditIntent(openPoll.originalPrompt) || playlistEditIntent(resolvedPrompt)) {
-      await this.withTyping(space, async () => {
+    const workingReaction = playlistWorkingReaction(
+      resolvedPrompt,
+      "activity_playlist",
+    );
+    await this.withTyping(space, async () => {
+      await convex.mutation(api.conversation.resolvePendingPoll, {
+        pollId: openPoll._id,
+        selectedOption,
+        now: Date.now(),
+      });
+      await this.tapback(sourceMessage, workingReaction, user._id);
+
+      if (playlistEditIntent(openPoll.originalPrompt) || playlistEditIntent(resolvedPrompt)) {
         await this.editExistingPlaylist(
           space,
           user,
@@ -2284,16 +2306,9 @@ export class RotationBot {
           sourceMessage,
           conversationHistory,
         );
-      });
-      return true;
-    }
+        return;
+      }
 
-    const workingReaction = playlistWorkingReaction(
-      resolvedPrompt,
-      "activity_playlist",
-    );
-    await this.tapback(sourceMessage, workingReaction, user._id);
-    await this.withTyping(space, async () => {
       await this.createPlaylistFromPrompt(space, user, {
         prompt: openPoll.originalPrompt,
         pollAnswer: selectedOption,

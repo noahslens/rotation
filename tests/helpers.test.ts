@@ -713,7 +713,8 @@ test("gemini initial discovery review repairs narrow first rotation plans", asyn
       playlistName: "headlights",
       playlistDescription: "late night drive songs",
       targetCount: 75,
-      searchQueries: ["night drive synthwave", "tame impala deep cuts"],
+      songPicks: ["kavinsky - nightcall", "tame impala - alter ego"],
+      searchQueries: [],
       familiarTrackIds: [],
       vibe: "late night drive",
       userFacingSummary: "made a late night drive playlist.",
@@ -724,15 +725,46 @@ test("gemini initial discovery review repairs narrow first rotation plans", asyn
       revisedPlaylistName: "first rotation",
       revisedPlaylistDescription: "broad discovery from the user's taste",
       revisedUserFacingSummary: "first rotation is ready. lmk what you think.",
-      queriesToDrop: ["night drive synthwave"],
-      queryAdditions: ["left-field r&b deep cuts", "underground rap adjacent"],
+      songPicksToDrop: ["kavinsky - nightcall"],
+      songPickAdditions: ["kelela - bank head", "young nudy - spaced out"],
     },
   );
 
   assert.equal(reviewed.playlistName, "first rotation");
-  assert.deepEqual(reviewed.searchQueries, [
-    "tame impala deep cuts",
-    "left-field r&b deep cuts",
-    "underground rap adjacent",
+  assert.deepEqual(reviewed.songPicks, [
+    "tame impala - alter ego",
+    "kelela - bank head",
+    "young nudy - spaced out",
   ]);
+});
+
+test("song pick spotify helpers parse and score intended tracks", async () => {
+  const {
+    parseSongPick,
+    songPickToSpotifyQuery,
+    spotifySongMatchScore,
+  } = await import("../src/services/spotify");
+
+  assert.deepEqual(parseSongPick("Frank Ocean - DHL"), {
+    artist: "Frank Ocean",
+    title: "DHL",
+    text: "Frank Ocean - DHL",
+  });
+  assert.equal(songPickToSpotifyQuery("Frank Ocean - DHL"), "track:DHL artist:Frank Ocean");
+
+  const exactScore = spotifySongMatchScore("Frank Ocean - DHL", {
+    name: "DHL",
+    artists: ["Frank Ocean"],
+    album: "DHL",
+    popularity: 67,
+  });
+  const badScore = spotifySongMatchScore("Frank Ocean - DHL", {
+    name: "Nights",
+    artists: ["Avicii"],
+    album: "True",
+    popularity: 80,
+  });
+
+  assert.ok(exactScore > 0.85);
+  assert.ok(badScore < 0.45);
 });

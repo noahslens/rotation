@@ -110,8 +110,8 @@ export const geminiInitialDiscoveryPlannerGuard = [
   "the first rotation / onboarding request is a broad personal discovery mix, not a mood, activity, location, setting, weather, time-of-day, or event playlist.",
   "do not aim or name the first rotation around night drives, headlights, rain, gym, party, focus, sadness, a city, a season, or one cinematic scene unless the latest user message explicitly asked for that. the default first rotation prompt does not.",
   "the playlist name should be neutral and lowercase, like first rotation, rotation zero, high contrast, or another simple library-wide name. avoid names that imply one narrow setting.",
-  "searchQueries must cover the user's major supported taste clusters across their savedTracks and strong user-owned playlist tracks. when the library supports it, use at least 5 distinct lanes across genres, eras, scenes, tempos, and textures.",
-  "no single mood, setting, artist, album, genre, or scene should dominate the searchQueries. if your draft can be summarized as one mood or setting, discard it and rewrite it as a broad cross-genre discovery mix.",
+  "songPicks must cover the user's major supported taste clusters across their savedTracks and strong user-owned playlist tracks. when the library supports it, use at least 5 distinct lanes across genres, eras, scenes, tempos, and textures.",
+  "no single mood, setting, artist, album, genre, or scene should dominate the songPicks. if your draft can be summarized as one mood or setting, discard it and rewrite it as a broad cross-genre discovery mix.",
 ].join("\n");
 
 const intentSchema = z.object({
@@ -137,7 +137,8 @@ const playlistPlanSchema = z.object({
   playlistName: z.string().min(1).max(200),
   playlistDescription: z.string().min(1).max(1000),
   targetCount: z.number().int().min(8).max(200),
-  searchQueries: z.array(z.string().min(2).max(200)).min(1).max(120),
+  songPicks: z.array(z.string().min(2).max(200)).max(260).optional(),
+  searchQueries: z.array(z.string().min(2).max(200)).max(120).optional(),
   familiarTrackIds: z.array(z.string()).max(1000),
   vibe: z.string().max(1000),
   userFacingSummary: z.string().min(1).max(2000),
@@ -149,6 +150,8 @@ const initialDiscoveryPlanReviewSchema = z.object({
   revisedPlaylistName: z.string().min(1).max(80).optional(),
   revisedPlaylistDescription: z.string().min(1).max(240).optional(),
   revisedUserFacingSummary: z.string().min(1).max(320).optional(),
+  songPickAdditions: z.array(z.string().min(2).max(120)).max(80).optional(),
+  songPicksToDrop: z.array(z.string().min(2).max(120)).max(80).optional(),
   queryAdditions: z.array(z.string().min(2).max(120)).max(40).optional(),
   queriesToDrop: z.array(z.string().min(2).max(120)).max(40).optional(),
 });
@@ -385,9 +388,14 @@ export const applyInitialDiscoveryPlanReview = (
 ): PlaylistPlanObject => {
   if (review.passes) return plan;
 
+  const songPicksToDrop = new Set((review.songPicksToDrop ?? []).map(queryKey));
+  const songPicks = uniqueStrings([
+    ...(plan.songPicks ?? []).filter((pick) => !songPicksToDrop.has(queryKey(pick))),
+    ...(review.songPickAdditions ?? []),
+  ]).slice(0, 240);
   const queriesToDrop = new Set((review.queriesToDrop ?? []).map(queryKey));
   const searchQueries = uniqueStrings([
-    ...plan.searchQueries.filter((query) => !queriesToDrop.has(queryKey(query))),
+    ...(plan.searchQueries ?? []).filter((query) => !queriesToDrop.has(queryKey(query))),
     ...(review.queryAdditions ?? []),
   ]).slice(0, 40);
 
@@ -408,6 +416,7 @@ export const applyInitialDiscoveryPlanReview = (
       320,
       plan.userFacingSummary,
     ),
+    songPicks: songPicks.length ? songPicks : plan.songPicks,
     searchQueries: searchQueries.length ? searchQueries : plan.searchQueries,
   };
 };
@@ -424,8 +433,13 @@ const normalizePlaylistPlan = (
       ).slice(0, 4)
     : undefined;
   const pollQuestion = compactString(plan.pollQuestion, 120);
+  const songPicks = uniqueStrings(
+    (plan.songPicks ?? []).map((pick) => compactString(pick, 120)).filter(Boolean),
+  ).slice(0, 240);
   const searchQueries = uniqueStrings(
-    plan.searchQueries.map((query) => compactString(query, 120)).filter(Boolean),
+    (plan.searchQueries ?? [])
+      .map((query) => compactString(query, 120))
+      .filter(Boolean),
   ).slice(0, 40);
   const fallbackQuery = compactString(args.prompt, 120, "music discovery");
   const targetCount = args.fixedTargetCount
@@ -444,6 +458,7 @@ const normalizePlaylistPlan = (
       "made by rotation",
     ),
     targetCount,
+    songPicks,
     searchQueries: searchQueries.length ? searchQueries : [fallbackQuery],
     familiarTrackIds: uniqueStrings(plan.familiarTrackIds).slice(0, 200),
     vibe: compactString(plan.vibe, 160),
@@ -543,12 +558,18 @@ if countMode is fixed, set targetCount exactly to defaultTargetCount.
 if countMode is dynamic, set targetCount based on the user's prompt, explicit count, explicit time window, and activity.
 for dynamic counts: obey explicit requested song counts when present; if the user specifies a duration, estimate about 3 minutes per song; for quick walks/showers/short drives use 12-25 songs; for runs/gym/focus sessions use 35-80; for parties/road trips/deep discovery use 80-200.
 if countMode is dynamic and the prompt does not imply duration or scale, choose the smallest playlist that feels complete for the task instead of defaulting to 50.
-if pollAnswer says 25% current, 50% current, 75% current, or 100% current, treat that as the requested share of songs from the user's existing liked/saved/playlist history. choose familiarTrackIds from the full musicContext for that share, and use searchQueries for the new-song share.
+if pollAnswer says 25% current, 50% current, 75% current, or 100% current, treat that as the requested share of songs from the user's existing liked/saved/playlist history. choose familiarTrackIds from the full musicContext for that share, and use songPicks for the new-song share.
 if pollAnswer says 100% current, use current library songs only unless there are not enough fitting songs.
 for new music/discovery, use saved songs, top tracks, and weighted playlist tracks as taste evidence only. the playlist itself must be music outside their known library.
 for new music/discovery, find layups they are almost certain to fall in love with: very close in taste, repeatedly supported by their saved tracks, but not already liked and not obvious top hits they have probably heard.
 for new music/discovery, avoid super mainstream picks unless the user explicitly asks for mainstream, hits, or familiar music.
-for new music/discovery, search for adjacent artists, deeper cuts, scene/genre descriptors, label/era sounds, and artist combinations that strongly fit their taste.
+for songPicks, output the actual songs you want in the playlist as plain text strings in exactly this format: artist - song title.
+songPicks are not search queries, genres, moods, scenes, or artist-only hints. each item must name one real song by one real artist.
+for any new-song share, songPicks is the primary output. include about 35 percent more songPicks than targetCount for that new-song share because unmatched spotify results and known-library duplicates will be skipped.
+for balanced playlists, use familiarTrackIds for current-library songs and songPicks for the new-song portion.
+if pollAnswer says 100% current, songPicks can be empty and familiarTrackIds should carry the playlist.
+searchQueries is legacy fallback only. do not use it for broad discovery strategy unless you genuinely cannot name specific songs.
+for new music/discovery, choose adjacent artists, deeper cuts, label/era sounds, and artist combinations that strongly fit their taste, then write the final intended songs into songPicks.
 playlist owner/name matters only for user-owned playlists whose tracks are included. spotify/editorial/charts/radio playlists should not be used as taste evidence from metadata alone.
 for activity playlists, blend familiar anchors with new songs that fit the moment.`,
       prompt: playlistGenerationPrompt(
@@ -590,8 +611,8 @@ for activity playlists, blend familiar anchors with new songs that fit the momen
         system: `review a spotify first rotation planner output.
 the first rotation must be a broad personal discovery mix across the user's supported taste clusters.
 it must not become a mood, activity, location, setting, weather, time-of-day, event, or one-scene playlist.
-passes should be true only if the playlistName, copy, and searchQueries clearly remain broad and library-wide.
-if it fails, return minimal repairs: a neutral lowercase name, neutral copy, narrow queries to drop, and broad query additions that preserve genres/scenes already implied by the plan.
+passes should be true only if the playlistName, copy, and songPicks clearly remain broad and library-wide.
+if it fails, return minimal repairs: a neutral lowercase name, neutral copy, narrow songPicks to drop, and broad songPickAdditions that preserve genres/scenes already implied by the user's library.
 do not make a new playlist. do not select songs.`,
         prompt: JSON.stringify(
           {
@@ -635,7 +656,8 @@ do not make a new playlist. do not select songs.`,
       system: `${styleGuide}
 
 choose the best spotify tracks for the requested playlist.
-you are selecting ids from provided spotify search candidates and familiarTracks.
+you are selecting ids from provided spotify candidates and familiarTracks.
+candidates are spotify matches resolved from the planner's plain-text songPicks. each candidate's searchQuery is the model's intended song text.
 familiarTracks includes the user's full liked-song dump plus other strong familiar tracks when available.
 use familiarTracks as taste evidence and, when novelty mode allows it, as selectable current-library music.
 ${playlistJudgmentRules}

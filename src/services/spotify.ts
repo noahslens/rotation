@@ -45,6 +45,7 @@ export type RotationTrack = {
 
 export type CandidateTrack = RotationTrack & {
   searchQuery?: string;
+  matchScore?: number;
 };
 
 export type CreatedPlaylist = {
@@ -123,6 +124,103 @@ const spotifyPlainText = (value: string) =>
     .replace(/[\u2014\u2013]/g, "-")
     .replace(/\s+/g, " ")
     .trim();
+
+const searchableText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/\b(feat|ft|featuring)\.?\b/g, " ")
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenSet = (value: string) =>
+  new Set(searchableText(value).split(" ").filter((token) => token.length > 1));
+
+const tokenCoverage = (needle: string, haystack: string) => {
+  const needleTokens = tokenSet(needle);
+  if (needleTokens.size === 0) return 0;
+  const haystackTokens = tokenSet(haystack);
+  let hits = 0;
+  for (const token of needleTokens) {
+    if (haystackTokens.has(token)) hits += 1;
+  }
+  return hits / needleTokens.size;
+};
+
+const stripListPrefix = (value: string) =>
+  value
+    .replace(/^\s*\d+[\).\-\s]+/, "")
+    .replace(/^\s*[-*]\s+/, "")
+    .trim();
+
+export const parseSongPick = (pick: string) => {
+  const clean = stripListPrefix(pick)
+    .replace(/\s+[–—]\s+/g, " - ")
+    .replace(/\s+\|\s+/g, " - ")
+    .trim();
+  const byMatch = clean.match(/^(.+?)\s+by\s+(.+)$/i);
+  if (byMatch) {
+    return {
+      artist: byMatch[2]?.trim(),
+      title: byMatch[1]?.trim(),
+      text: clean,
+    };
+  }
+  const dashIndex = clean.indexOf(" - ");
+  if (dashIndex > 0) {
+    return {
+      artist: clean.slice(0, dashIndex).trim(),
+      title: clean.slice(dashIndex + 3).trim(),
+      text: clean,
+    };
+  }
+  return {
+    artist: undefined,
+    title: undefined,
+    text: clean,
+  };
+};
+
+export const songPickToSpotifyQuery = (pick: string) => {
+  const parsed = parseSongPick(pick);
+  if (parsed.artist && parsed.title) {
+    return `track:${parsed.title} artist:${parsed.artist}`;
+  }
+  return parsed.text;
+};
+
+export const spotifySongMatchScore = (
+  pick: string,
+  track: Pick<RotationTrack, "name" | "artists" | "album" | "popularity">,
+  index = 0,
+) => {
+  const parsed = parseSongPick(pick);
+  const artistText = track.artists.join(" ");
+  const titleScore = parsed.title ? tokenCoverage(parsed.title, track.name) : 0;
+  const artistScore = parsed.artist ? tokenCoverage(parsed.artist, artistText) : 0;
+  const combinedScore = tokenCoverage(
+    parsed.text,
+    `${track.name} ${artistText} ${track.album ?? ""}`,
+  );
+  const popularityTieBreaker = Math.min(0.04, (track.popularity ?? 0) / 2500);
+  const rankPenalty = index * 0.015;
+
+  if (parsed.artist && parsed.title) {
+    return (
+      titleScore * 0.56 +
+      artistScore * 0.34 +
+      combinedScore * 0.1 +
+      popularityTieBreaker -
+      rankPenalty
+    );
+  }
+
+  return combinedScore + popularityTieBreaker - rankPenalty;
+};
 
 const mapTrack = (
   track: SpotifyTrack | null | undefined,
@@ -341,6 +439,60 @@ export class SpotifyService {
         candidates.push({ ...mapped, searchQuery: query });
         if (candidates.length >= maxCandidates) return candidates;
       }
+    }
+
+    return candidates;
+  }
+
+  async resolveSongPicks(
+    userId: Id<"users">,
+    songPicks: string[],
+    knownTrackIds: Set<string>,
+    maxCandidates = 180,
+  ) {
+    const candidates: CandidateTrack[] = [];
+    const seen = new Set(knownTrackIds);
+    const normalizedPicks = Array.from(
+      new Set(songPicks.map((pick) => stripListPrefix(pick)).filter(Boolean)),
+    );
+
+    for (const pick of normalizedPicks.slice(0, 240)) {
+      const queries = Array.from(
+        new Set([songPickToSpotifyQuery(pick), parseSongPick(pick).text].filter(Boolean)),
+      );
+      const matches: Array<{ track: RotationTrack; score: number }> = [];
+
+      for (const query of queries) {
+        const params = new URLSearchParams({
+          q: query,
+          type: "track",
+          limit: "10",
+          market: "from_token",
+        });
+        const payload = await this.request<{ tracks?: { items?: SpotifyTrack[] } }>(
+          userId,
+          `/search?${params.toString()}`,
+        );
+        for (const [index, item] of (payload.tracks?.items ?? []).entries()) {
+          const mapped = mapTrack(item, "recommendation");
+          if (!mapped || seen.has(mapped.spotifyTrackId)) continue;
+          matches.push({
+            track: mapped,
+            score: spotifySongMatchScore(pick, mapped, index),
+          });
+        }
+        if (matches.some((match) => match.score >= 0.86)) break;
+      }
+
+      const best = matches.sort((left, right) => right.score - left.score)[0];
+      if (!best || best.score < 0.45) continue;
+      seen.add(best.track.spotifyTrackId);
+      candidates.push({
+        ...best.track,
+        searchQuery: pick,
+        matchScore: best.score,
+      });
+      if (candidates.length >= maxCandidates) return candidates;
     }
 
     return candidates;

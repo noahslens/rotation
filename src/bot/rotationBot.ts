@@ -3077,23 +3077,35 @@ export class RotationBot {
       args.context.tracks.map((track) => track.spotifyTrackId),
     );
     const openerQuery = explicitOpenerQuery(args.prompt);
-    const searchQueries = openerQuery
+    const planSongPicks = args.plan.songPicks ?? [];
+    const songPicks = openerQuery
       ? [
           openerQuery,
-          ...args.plan.searchQueries.filter(
-            (query) => normalize(query) !== normalize(openerQuery),
+          ...planSongPicks.filter(
+            (pick) => normalize(pick) !== normalize(openerQuery),
           ),
         ]
-      : args.plan.searchQueries;
-    const rawCandidates = await this.spotify.searchTracks(
-      args.user._id,
-      searchQueries,
-      knownTrackIds,
-      Math.min(600, Math.max(240, selectionPlan.targetCount * 3)),
-    );
-    const candidates = args.newOnly
-      ? rankDiscoveryCandidates(rawCandidates)
-      : rawCandidates;
+      : planSongPicks;
+    const maxCandidates = Math.min(600, Math.max(240, selectionPlan.targetCount * 3));
+    const rawCandidates =
+      songPicks.length > 0
+        ? await this.spotify.resolveSongPicks(
+            args.user._id,
+            songPicks,
+            knownTrackIds,
+            maxCandidates,
+          )
+        : await this.spotify.searchTracks(
+            args.user._id,
+            args.plan.searchQueries ?? [],
+            knownTrackIds,
+            maxCandidates,
+          );
+    const candidates = songPicks.length > 0
+      ? rawCandidates
+      : args.newOnly
+        ? rankDiscoveryCandidates(rawCandidates)
+        : rawCandidates;
     const familiarTracks = this.familiarTracks(
       args.context.tracks,
       args.plan.familiarTrackIds,
